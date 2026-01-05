@@ -393,9 +393,20 @@ func runPolecatAdd(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 	polecatName := args[1]
 
-	mgr, _, err := getPolecatManager(rigName)
+	mgr, r, err := getPolecatManager(rigName)
 	if err != nil {
 		return err
+	}
+
+	// Check polecat limit from rig config
+	rigConfig, err := rig.LoadRigConfig(r.Path)
+	if err == nil && rigConfig.Limits != nil && rigConfig.Limits.MaxPolecats > 0 {
+		// Count existing polecats
+		polecats, listErr := mgr.List()
+		if listErr == nil && len(polecats) >= rigConfig.Limits.MaxPolecats {
+			return fmt.Errorf("polecat limit reached: %d/%d (configure limits.max_polecats in %s/config.json)",
+				len(polecats), rigConfig.Limits.MaxPolecats, r.Path)
+		}
 	}
 
 	fmt.Printf("Adding polecat %s to rig %s...\n", polecatName, rigName)
