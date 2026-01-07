@@ -215,6 +215,28 @@ gt doctor                    # Health check
 gt doctor --fix              # Auto-repair
 ```
 
+### Configuration
+
+```bash
+# Agent management
+gt config agent list [--json]     # List all agents (built-in + custom)
+gt config agent get <name>        # Show agent configuration
+gt config agent set <name> <cmd>  # Create or update custom agent
+gt config agent remove <name>     # Remove custom agent (built-ins protected)
+
+# Default agent
+gt config default-agent [name]    # Get or set town default agent
+```
+
+**Built-in agents**: `claude`, `gemini`, `codex`
+
+**Custom agents**: Define per-town in `mayor/town.json`:
+```bash
+gt config agent set claude-glm "claude-glm --model glm-4"
+gt config agent set claude "claude-opus"  # Override built-in
+gt config default-agent claude-glm       # Set default
+```
+
 ### Rig Management
 
 ```bash
@@ -242,11 +264,18 @@ Note: "Swarm" is ephemeral (workers on a convoy's issues). See [Convoys](convoy.
 # Standard workflow: convoy first, then sling
 gt convoy create "Feature X" gt-abc gt-def
 gt sling gt-abc <rig>                    # Assign to polecat
-gt sling gt-def <rig> --molecule=<proto> # With workflow template
+gt sling gt-abc <rig> --agent codex      # Override runtime for this sling/spawn
+gt sling <proto> --on gt-def <rig>       # With workflow template
 
 # Quick sling (auto-creates convoy)
 gt sling <bead> <rig>                    # Auto-convoy for dashboard visibility
 ```
+
+Agent overrides:
+
+- `gt start --agent <alias>` overrides the Mayor/Deacon runtime for this launch.
+- `gt mayor start|attach|restart --agent <alias>` and `gt deacon start|attach|restart --agent <alias>` do the same.
+- `gt start crew <name> --agent <alias>` and `gt crew at <name> --agent <alias>` override the crew worker runtime.
 
 ### Communication
 
@@ -323,7 +352,7 @@ Deacon, Witness, and Refinery run continuous patrol loops using wisps:
 |-------|-----------------|----------------|
 | **Deacon** | `mol-deacon-patrol` | Agent lifecycle, plugin execution, health checks |
 | **Witness** | `mol-witness-patrol` | Monitor polecats, nudge stuck workers |
-| **Refinery** | `mol-refinery-patrol` | Process merge queue, review PRs |
+| **Refinery** | `mol-refinery-patrol` | Process merge queue, review MRs |
 
 ```
 1. bd mol wisp mol-<role>-patrol

@@ -229,6 +229,37 @@ Examples:
 	RunE: runPolecatCheckRecovery,
 }
 
+var (
+	polecatStaleJSON      bool
+	polecatStaleThreshold int
+	polecatStaleCleanup   bool
+)
+
+var polecatStaleCmd = &cobra.Command{
+	Use:   "stale <rig>",
+	Short: "Detect stale polecats that may need cleanup",
+	Long: `Detect stale polecats in a rig that are candidates for cleanup.
+
+A polecat is considered stale if:
+  - No active tmux session
+  - Way behind main (>threshold commits) OR no agent bead
+  - Has no uncommitted work that could be lost
+
+The default threshold is 20 commits behind main.
+
+Use --cleanup to automatically nuke stale polecats that are safe to remove.
+Use --dry-run with --cleanup to see what would be cleaned.
+
+Examples:
+  gt polecat stale greenplace
+  gt polecat stale greenplace --threshold 50
+  gt polecat stale greenplace --json
+  gt polecat stale greenplace --cleanup
+  gt polecat stale greenplace --cleanup --dry-run`,
+	Args: cobra.ExactArgs(1),
+	RunE: runPolecatStale,
+}
+
 func init() {
 	// List flags
 	polecatListCmd.Flags().BoolVar(&polecatListJSON, "json", false, "Output as JSON")
@@ -259,6 +290,11 @@ func init() {
 	// Check-recovery flags
 	polecatCheckRecoveryCmd.Flags().BoolVar(&polecatCheckRecoveryJSON, "json", false, "Output as JSON")
 
+	// Stale flags
+	polecatStaleCmd.Flags().BoolVar(&polecatStaleJSON, "json", false, "Output as JSON")
+	polecatStaleCmd.Flags().IntVar(&polecatStaleThreshold, "threshold", 20, "Commits behind main to consider stale")
+	polecatStaleCmd.Flags().BoolVar(&polecatStaleCleanup, "cleanup", false, "Automatically nuke stale polecats")
+
 	// Add subcommands
 	polecatCmd.AddCommand(polecatListCmd)
 	polecatCmd.AddCommand(polecatAddCmd)
@@ -269,6 +305,7 @@ func init() {
 	polecatCmd.AddCommand(polecatCheckRecoveryCmd)
 	polecatCmd.AddCommand(polecatGCCmd)
 	polecatCmd.AddCommand(polecatNukeCmd)
+	polecatCmd.AddCommand(polecatStaleCmd)
 
 	rootCmd.AddCommand(polecatCmd)
 }
@@ -944,12 +981,12 @@ func getGitState(worktreePath string) (*GitState, error) {
 
 // RecoveryStatus represents whether a polecat needs recovery or is safe to nuke.
 type RecoveryStatus struct {
-	Rig           string `json:"rig"`
-	Polecat       string `json:"polecat"`
-	CleanupStatus string `json:"cleanup_status"`
-	NeedsRecovery bool   `json:"needs_recovery"`
-	Verdict       string `json:"verdict"` // SAFE_TO_NUKE or NEEDS_RECOVERY
-	Branch        string `json:"branch,omitempty"`
+	Rig           string                `json:"rig"`
+	Polecat       string                `json:"polecat"`
+	CleanupStatus polecat.CleanupStatus `json:"cleanup_status"`
+	NeedsRecovery bool                  `json:"needs_recovery"`
+	Verdict       string                `json:"verdict"` // SAFE_TO_NUKE or NEEDS_RECOVERY
+	Branch        string                `json:"branch,omitempty"`
 	Issue         string `json:"issue,omitempty"`
 }
 
@@ -989,38 +1026,35 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 		// This handles polecats that haven't self-reported yet
 		gitState, gitErr := getGitState(p.ClonePath)
 		if gitErr != nil {
-			status.CleanupStatus = "unknown"
+			status.CleanupStatus = polecat.CleanupUnknown
 			status.NeedsRecovery = true
 			status.Verdict = "NEEDS_RECOVERY"
 		} else if gitState.Clean {
-			status.CleanupStatus = "clean"
+			status.CleanupStatus = polecat.CleanupClean
 			status.NeedsRecovery = false
 			status.Verdict = "SAFE_TO_NUKE"
 		} else if gitState.UnpushedCommits > 0 {
-			status.CleanupStatus = "has_unpushed"
+			status.CleanupStatus = polecat.CleanupUnpushed
 			status.NeedsRecovery = true
 			status.Verdict = "NEEDS_RECOVERY"
 		} else if gitState.StashCount > 0 {
-			status.CleanupStatus = "has_stash"
+			status.CleanupStatus = polecat.CleanupStash
 			status.NeedsRecovery = true
 			status.Verdict = "NEEDS_RECOVERY"
 		} else {
-			status.CleanupStatus = "has_uncommitted"
+			status.CleanupStatus = polecat.CleanupUncommitted
 			status.NeedsRecovery = true
 			status.Verdict = "NEEDS_RECOVERY"
 		}
 	} else {
 		// Use cleanup_status from agent bead
-		status.CleanupStatus = fields.CleanupStatus
-		switch fields.CleanupStatus {
-		case "clean":
+		status.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
+		if status.CleanupStatus.IsSafe() {
 			status.NeedsRecovery = false
 			status.Verdict = "SAFE_TO_NUKE"
-		case "has_uncommitted", "has_unpushed", "has_stash":
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-		default:
-			// Unknown or empty - be conservative
+		} else {
+			// RequiresRecovery covers uncommitted, stash, unpushed
+			// Unknown/empty also treated conservatively
 			status.NeedsRecovery = true
 			status.Verdict = "NEEDS_RECOVERY"
 		}
@@ -1249,28 +1283,42 @@ func runPolecatNuke(cmd *cobra.Command, args []string) error {
 				}
 			} else {
 				// Check cleanup_status from agent bead
-				switch fields.CleanupStatus {
-				case "clean":
+				cleanupStatus := polecat.CleanupStatus(fields.CleanupStatus)
+				switch cleanupStatus {
+				case polecat.CleanupClean:
 					// OK
-				case "has_unpushed":
+				case polecat.CleanupUnpushed:
 					reasons = append(reasons, "has unpushed commits")
-				case "has_uncommitted":
+				case polecat.CleanupUncommitted:
 					reasons = append(reasons, "has uncommitted changes")
-				case "has_stash":
+				case polecat.CleanupStash:
 					reasons = append(reasons, "has stashed changes")
-				case "unknown", "":
+				case polecat.CleanupUnknown, "":
 					reasons = append(reasons, "cleanup status unknown")
 				default:
-					reasons = append(reasons, fmt.Sprintf("cleanup status: %s", fields.CleanupStatus))
+					reasons = append(reasons, fmt.Sprintf("cleanup status: %s", cleanupStatus))
 				}
 
 				// Check 3: Work on hook (check both Issue.HookBead from slot and fields.HookBead)
+				// Only flag as blocking if the hooked bead is still in an active status.
+				// If the hooked bead was closed externally (gt-jc7bq), don't block nuke.
 				hookBead := agentIssue.HookBead
 				if hookBead == "" {
 					hookBead = fields.HookBead
 				}
 				if hookBead != "" {
-					reasons = append(reasons, fmt.Sprintf("has work on hook (%s)", hookBead))
+					// Check if hooked bead is still active (not closed)
+					hookedIssue, err := bd.Show(hookBead)
+					if err == nil && hookedIssue != nil {
+						// Only block if bead is still active (not closed)
+						if hookedIssue.Status != "closed" {
+							reasons = append(reasons, fmt.Sprintf("has work on hook (%s)", hookBead))
+						}
+						// If closed, the hook is stale - don't block nuke
+					} else {
+						// Can't verify hooked bead - be conservative
+						reasons = append(reasons, fmt.Sprintf("has work on hook (%s, unverified)", hookBead))
+					}
 				}
 			}
 
@@ -1348,10 +1396,11 @@ func runPolecatNuke(cmd *cobra.Command, args []string) error {
 				}
 				fmt.Printf("    - Hook: %s\n", style.Dim.Render("unknown (no agent bead)"))
 			} else {
-				if fields.CleanupStatus == "clean" {
+				cleanupStatus := polecat.CleanupStatus(fields.CleanupStatus)
+				if cleanupStatus.IsSafe() {
 					fmt.Printf("    - Git state: %s\n", style.Success.Render("clean"))
-				} else if fields.CleanupStatus != "" {
-					fmt.Printf("    - Git state: %s (%s)\n", style.Error.Render("dirty"), fields.CleanupStatus)
+				} else if cleanupStatus.RequiresRecovery() {
+					fmt.Printf("    - Git state: %s (%s)\n", style.Error.Render("dirty"), cleanupStatus)
 				} else {
 					fmt.Printf("    - Git state: %s\n", style.Warning.Render("unknown"))
 				}
@@ -1361,7 +1410,13 @@ func runPolecatNuke(cmd *cobra.Command, args []string) error {
 					hookBead = fields.HookBead
 				}
 				if hookBead != "" {
-					fmt.Printf("    - Hook: %s (%s)\n", style.Error.Render("has work"), hookBead)
+					// Check if hooked bead is still active
+					hookedIssue, err := bd.Show(hookBead)
+					if err == nil && hookedIssue != nil && hookedIssue.Status == "closed" {
+						fmt.Printf("    - Hook: %s (%s, closed - stale)\n", style.Warning.Render("stale"), hookBead)
+					} else {
+						fmt.Printf("    - Hook: %s (%s)\n", style.Error.Render("has work"), hookBead)
+					}
 				} else {
 					fmt.Printf("    - Hook: %s\n", style.Success.Render("empty"))
 				}
@@ -1468,6 +1523,119 @@ func runPolecatNuke(cmd *cobra.Command, args []string) error {
 
 	if len(nukeErrors) > 0 {
 		return fmt.Errorf("%d nuke(s) failed", len(nukeErrors))
+	}
+
+	return nil
+}
+
+func runPolecatStale(cmd *cobra.Command, args []string) error {
+	rigName := args[0]
+	mgr, r, err := getPolecatManager(rigName)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Detecting stale polecats in %s (threshold: %d commits behind main)...\n\n", r.Name, polecatStaleThreshold)
+
+	staleInfos, err := mgr.DetectStalePolecats(polecatStaleThreshold)
+	if err != nil {
+		return fmt.Errorf("detecting stale polecats: %w", err)
+	}
+
+	if len(staleInfos) == 0 {
+		fmt.Println("No polecats found.")
+		return nil
+	}
+
+	// JSON output
+	if polecatStaleJSON {
+		return json.NewEncoder(os.Stdout).Encode(staleInfos)
+	}
+
+	// Summary counts
+	var staleCount, safeCount int
+	for _, info := range staleInfos {
+		if info.IsStale {
+			staleCount++
+		} else {
+			safeCount++
+		}
+	}
+
+	// Display results
+	for _, info := range staleInfos {
+		statusIcon := style.Success.Render("●")
+		statusText := "active"
+		if info.IsStale {
+			statusIcon = style.Warning.Render("○")
+			statusText = "stale"
+		}
+
+		fmt.Printf("%s %s (%s)\n", statusIcon, style.Bold.Render(info.Name), statusText)
+
+		// Session status
+		if info.HasActiveSession {
+			fmt.Printf("    Session: %s\n", style.Success.Render("running"))
+		} else {
+			fmt.Printf("    Session: %s\n", style.Dim.Render("stopped"))
+		}
+
+		// Commits behind
+		if info.CommitsBehind > 0 {
+			behindStyle := style.Dim
+			if info.CommitsBehind >= polecatStaleThreshold {
+				behindStyle = style.Warning
+			}
+			fmt.Printf("    Behind main: %s\n", behindStyle.Render(fmt.Sprintf("%d commits", info.CommitsBehind)))
+		}
+
+		// Agent state
+		if info.AgentState != "" {
+			fmt.Printf("    Agent state: %s\n", info.AgentState)
+		} else {
+			fmt.Printf("    Agent state: %s\n", style.Dim.Render("no bead"))
+		}
+
+		// Uncommitted work
+		if info.HasUncommittedWork {
+			fmt.Printf("    Uncommitted: %s\n", style.Error.Render("yes"))
+		}
+
+		// Reason
+		fmt.Printf("    Reason: %s\n", info.Reason)
+		fmt.Println()
+	}
+
+	// Summary
+	fmt.Printf("Summary: %d stale, %d active\n", staleCount, safeCount)
+
+	// Cleanup if requested
+	if polecatStaleCleanup && staleCount > 0 {
+		fmt.Println()
+		if polecatNukeDryRun {
+			fmt.Printf("Would clean up %d stale polecat(s):\n", staleCount)
+			for _, info := range staleInfos {
+				if info.IsStale {
+					fmt.Printf("  - %s: %s\n", info.Name, info.Reason)
+				}
+			}
+		} else {
+			fmt.Printf("Cleaning up %d stale polecat(s)...\n", staleCount)
+			nuked := 0
+			for _, info := range staleInfos {
+				if !info.IsStale {
+					continue
+				}
+				fmt.Printf("  Nuking %s...", info.Name)
+				if err := mgr.RemoveWithOptions(info.Name, true, false); err != nil {
+					fmt.Printf(" %s (%v)\n", style.Error.Render("failed"), err)
+				} else {
+					fmt.Printf(" %s\n", style.Success.Render("done"))
+					nuked++
+				}
+			}
+			fmt.Printf("\n%s Nuked %d stale polecat(s).\n", style.SuccessPrefix, nuked)
+		}
 	}
 
 	return nil

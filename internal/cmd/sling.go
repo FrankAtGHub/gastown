@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/dog"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/session"
@@ -53,7 +55,6 @@ Target Resolution:
   gt sling gt-abc deacon/dogs/alpha     # Specific dog
 
 Spawning Options (when target is a rig):
-  gt sling gp-abc greenplace --molecule mol-review  # Use specific workflow
   gt sling gp-abc greenplace --create               # Create polecat if missing
   gt sling gp-abc greenplace --naked                # No-tmux (manual start)
   gt sling gp-abc greenplace --force                # Ignore unread mail
@@ -73,11 +74,6 @@ Formula Slinging:
 Formula-on-Bead (--on flag):
   gt sling mol-review --on gt-abc       # Apply formula to existing work
   gt sling shiny --on gt-abc crew       # Apply formula, sling to crew
-
-Quality Levels (shorthand for polecat workflows):
-  gt sling gp-abc greenplace --quality=basic   # mol-polecat-basic (trivial fixes)
-  gt sling gp-abc greenplace --quality=shiny   # mol-polecat-shiny (standard)
-  gt sling gp-abc greenplace --quality=chrome  # mol-polecat-chrome (max rigor)
 
 Compare:
   gt hook <bead>      # Just attach (no action)
@@ -106,10 +102,9 @@ var (
 	// Flags migrated for polecat spawning (used by sling for work assignment
 	slingNaked    bool   // --naked: no-tmux mode (skip session creation)
 	slingCreate   bool   // --create: create polecat if it doesn't exist
-	slingMolecule string // --molecule: workflow to instantiate on the bead
 	slingForce    bool   // --force: force spawn even if polecat has unread mail
 	slingAccount  string // --account: Claude Code account handle to use
-	slingQuality  string // --quality: shorthand for polecat workflow (basic|shiny|chrome)
+	slingAgent    string // --agent: override runtime agent for this sling/spawn
 	slingNoConvoy bool   // --no-convoy: skip auto-convoy creation
 )
 
@@ -124,10 +119,9 @@ func init() {
 	// Flags for polecat spawning (when target is a rig)
 	slingCmd.Flags().BoolVar(&slingNaked, "naked", false, "No-tmux mode: assign work but skip session creation (manual start)")
 	slingCmd.Flags().BoolVar(&slingCreate, "create", false, "Create polecat if it doesn't exist")
-	slingCmd.Flags().StringVar(&slingMolecule, "molecule", "", "Molecule workflow to instantiate on the bead")
 	slingCmd.Flags().BoolVar(&slingForce, "force", false, "Force spawn even if polecat has unread mail")
 	slingCmd.Flags().StringVar(&slingAccount, "account", "", "Claude Code account handle to use")
-	slingCmd.Flags().StringVarP(&slingQuality, "quality", "q", "", "Polecat workflow quality level (basic|shiny|chrome)")
+	slingCmd.Flags().StringVar(&slingAgent, "agent", "", "Override agent/runtime for this sling (e.g., claude, gemini, codex, or custom alias)")
 	slingCmd.Flags().BoolVar(&slingNoConvoy, "no-convoy", false, "Skip auto-convoy creation for single-issue sling")
 
 	rootCmd.AddCommand(slingCmd)
@@ -160,22 +154,6 @@ func runSling(cmd *cobra.Command, args []string) error {
 		if rigName, isRig := IsRigName(lastArg); isRig {
 			return runBatchSling(args[:len(args)-1], rigName, townBeadsDir)
 		}
-	}
-
-	// --quality is shorthand for formula-on-bead with polecat workflow
-	// Convert: gt sling gp-abc greenplace --quality=shiny
-	// To:      gt sling mol-polecat-shiny --on gt-abc gastown
-	if slingQuality != "" {
-		qualityFormula, err := qualityToFormula(slingQuality)
-		if err != nil {
-			return err
-		}
-		// The first arg should be the bead, and we wrap it with the formula
-		if slingOnTarget != "" {
-			return fmt.Errorf("--quality cannot be used with --on (both specify formula)")
-		}
-		slingOnTarget = args[0]  // The bead becomes --on target
-		args[0] = qualityFormula // The formula becomes first arg
 	}
 
 	// Determine mode based on flags and argument types
@@ -267,6 +245,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 					Account:  slingAccount,
 					Create:   slingCreate,
 					HookBead: beadID, // Set atomically at spawn time
+					Agent:    slingAgent,
 				}
 				spawnInfo, spawnErr := SpawnPolecatForSling(rigName, spawnOpts)
 				if spawnErr != nil {
@@ -376,7 +355,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Instantiating formula %s...\n", formulaName)
 
 		// Step 1: Cook the formula (ensures proto exists)
-		cookCmd := exec.Command("bd", "cook", formulaName)
+		cookCmd := exec.Command("bd", "--no-daemon", "cook", formulaName)
 		cookCmd.Stderr = os.Stderr
 		if err := cookCmd.Run(); err != nil {
 			return fmt.Errorf("cooking formula %s: %w", formulaName, err)
@@ -384,7 +363,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 
 		// Step 2: Create wisp with feature variable from bead title
 		featureVar := fmt.Sprintf("feature=%s", info.Title)
-		wispArgs := []string{"mol", "wisp", formulaName, "--var", featureVar, "--json"}
+		wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName, "--var", featureVar, "--json"}
 		wispCmd := exec.Command("bd", wispArgs...)
 		wispCmd.Stderr = os.Stderr
 		wispOut, err := wispCmd.Output()
@@ -430,16 +409,10 @@ func runSling(cmd *cobra.Command, args []string) error {
 		beadID = wispRootID
 	}
 
-	// Hook the bead using bd update
-	// Set BEADS_DIR to town-level beads so hq-* beads are accessible
-	// even when running from polecat worktree (which only sees gt-* via redirect)
-	hookCmd := exec.Command("bd", "update", beadID, "--status=hooked", "--assignee="+targetAgent)
-	hookCmd.Env = append(os.Environ(), "BEADS_DIR="+townBeadsDir)
-	if hookWorkDir != "" {
-		hookCmd.Dir = hookWorkDir
-	} else {
-		hookCmd.Dir = townRoot
-	}
+	// Hook the bead using bd update.
+	// See: https://github.com/steveyegge/gastown/issues/148
+	hookCmd := exec.Command("bd", "--no-daemon", "update", beadID, "--status=hooked", "--assignee="+targetAgent)
+	hookCmd.Dir = beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
 	hookCmd.Stderr = os.Stderr
 	if err := hookCmd.Run(); err != nil {
 		return fmt.Errorf("hooking bead: %w", err)
@@ -454,6 +427,12 @@ func runSling(cmd *cobra.Command, args []string) error {
 	// Update agent bead's hook_bead field (ZFC: agents track their current work)
 	updateAgentHookBead(targetAgent, beadID, hookWorkDir, townBeadsDir)
 
+	// Store dispatcher in bead description (enables completion notification to dispatcher)
+	if err := storeDispatcherInBead(beadID, actor); err != nil {
+		// Warn but don't fail - polecat will still complete work
+		fmt.Printf("%s Could not store dispatcher in bead: %v\n", style.Dim.Render("Warning:"), err)
+	}
+
 	// Store args in bead description (no-tmux mode: beads as data plane)
 	if slingArgs != "" {
 		if err := storeArgsInBead(beadID, slingArgs); err != nil {
@@ -467,12 +446,24 @@ func runSling(cmd *cobra.Command, args []string) error {
 	// Try to inject the "start now" prompt (graceful if no tmux)
 	if targetPane == "" {
 		fmt.Printf("%s No pane to nudge (agent will discover work via gt prime)\n", style.Dim.Render("○"))
-	} else if err := injectStartPrompt(targetPane, beadID, slingSubject, slingArgs); err != nil {
-		// Graceful fallback for no-tmux mode
-		fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
-		fmt.Printf("  Agent will discover work via gt prime / bd show\n")
 	} else {
-		fmt.Printf("%s Start prompt sent\n", style.Bold.Render("▶"))
+		// Ensure agent is ready before nudging (prevents race condition where
+		// message arrives before Claude has fully started - see issue #115)
+		sessionName := getSessionFromPane(targetPane)
+		if sessionName != "" {
+			if err := ensureAgentReady(sessionName); err != nil {
+				// Non-fatal: warn and continue, agent will discover work via gt prime
+				fmt.Printf("%s Could not verify agent ready: %v\n", style.Dim.Render("○"), err)
+			}
+		}
+
+		if err := injectStartPrompt(targetPane, beadID, slingSubject, slingArgs); err != nil {
+			// Graceful fallback for no-tmux mode
+			fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
+			fmt.Printf("  Agent will discover work via gt prime / bd show\n")
+		} else {
+			fmt.Printf("%s Start prompt sent\n", style.Bold.Render("▶"))
+		}
 	}
 
 	return nil
@@ -482,7 +473,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 // This enables no-tmux mode where agents discover args via gt prime / bd show.
 func storeArgsInBead(beadID, args string) error {
 	// Get the bead to preserve existing description content
-	showCmd := exec.Command("bd", "show", beadID, "--json")
+	showCmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
 	out, err := showCmd.Output()
 	if err != nil {
 		return fmt.Errorf("fetching bead: %w", err)
@@ -506,6 +497,52 @@ func storeArgsInBead(beadID, args string) error {
 
 	// Set the args
 	fields.AttachedArgs = args
+
+	// Update the description
+	newDesc := beads.SetAttachmentFields(issue, fields)
+
+	// Update the bead
+	updateCmd := exec.Command("bd", "--no-daemon", "update", beadID, "--description="+newDesc)
+	updateCmd.Stderr = os.Stderr
+	if err := updateCmd.Run(); err != nil {
+		return fmt.Errorf("updating bead description: %w", err)
+	}
+
+	return nil
+}
+
+// storeDispatcherInBead stores the dispatcher agent ID in the bead's description.
+// This enables polecats to notify the dispatcher when work is complete.
+func storeDispatcherInBead(beadID, dispatcher string) error {
+	if dispatcher == "" {
+		return nil
+	}
+
+	// Get the bead to preserve existing description content
+	showCmd := exec.Command("bd", "show", beadID, "--json")
+	out, err := showCmd.Output()
+	if err != nil {
+		return fmt.Errorf("fetching bead: %w", err)
+	}
+
+	// Parse the bead
+	var issues []beads.Issue
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return fmt.Errorf("parsing bead: %w", err)
+	}
+	if len(issues) == 0 {
+		return fmt.Errorf("bead not found")
+	}
+	issue := &issues[0]
+
+	// Get or create attachment fields
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		fields = &beads.AttachmentFields{}
+	}
+
+	// Set the dispatcher
+	fields.DispatchedBy = dispatcher
 
 	// Update the description
 	newDesc := beads.SetAttachmentFields(issue, fields)
@@ -545,6 +582,57 @@ func injectStartPrompt(pane, beadID, subject, args string) error {
 	// Use the reliable nudge pattern (same as gt nudge / tmux.NudgeSession)
 	t := tmux.NewTmux()
 	return t.NudgePane(pane, prompt)
+}
+
+// getSessionFromPane extracts session name from a pane target.
+// Pane targets can be:
+// - "%9" (pane ID) - need to query tmux for session
+// - "gt-rig-name:0.0" (session:window.pane) - extract session name
+func getSessionFromPane(pane string) string {
+	if strings.HasPrefix(pane, "%") {
+		// Pane ID format - query tmux for the session
+		cmd := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{session_name}")
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// Session:window.pane format - extract session name
+	if idx := strings.Index(pane, ":"); idx > 0 {
+		return pane[:idx]
+	}
+	return pane
+}
+
+// ensureAgentReady waits for an agent to be ready before nudging an existing session.
+// Uses a pragmatic approach: wait for the pane to leave a shell, then (Claude-only)
+// accept the bypass permissions warning and give it a moment to finish initializing.
+func ensureAgentReady(sessionName string) error {
+	t := tmux.NewTmux()
+
+	// If an agent is already running, assume it's ready (session was started earlier)
+	if t.IsAgentRunning(sessionName) {
+		return nil
+	}
+
+	// Agent not running yet - wait for it to start (shell → program transition)
+	if err := t.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
+		return fmt.Errorf("waiting for agent to start: %w", err)
+	}
+
+	// Claude-only: accept bypass permissions warning if present
+	if t.IsClaudeRunning(sessionName) {
+		_ = t.AcceptBypassPermissionsWarning(sessionName)
+
+		// PRAGMATIC APPROACH: fixed delay rather than prompt detection.
+		// Claude startup takes ~5-8 seconds on typical machines.
+		time.Sleep(8 * time.Second)
+	} else {
+		time.Sleep(1 * time.Second)
+	}
+
+	return nil
 }
 
 // resolveTargetAgent converts a target spec to agent ID, pane, and hook root.
@@ -592,8 +680,15 @@ func sessionToAgentID(sessionName string) string {
 }
 
 // verifyBeadExists checks that the bead exists using bd show.
+// Uses bd's native prefix-based routing via routes.jsonl - do NOT set BEADS_DIR
+// as that overrides routing and breaks resolution of rig-level beads.
 func verifyBeadExists(beadID string) error {
-	cmd := exec.Command("bd", "show", beadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	// Run from town root so bd can find routes.jsonl for prefix-based routing.
+	// Do NOT set BEADS_DIR - that overrides routing and breaks rig bead resolution.
+	if townRoot, err := workspace.FindFromCwd(); err == nil {
+		cmd.Dir = townRoot
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("bead '%s' not found (bd show failed)", beadID)
 	}
@@ -608,8 +703,13 @@ type beadInfo struct {
 }
 
 // getBeadInfo returns status and assignee for a bead.
+// Uses bd's native prefix-based routing via routes.jsonl.
 func getBeadInfo(beadID string) (*beadInfo, error) {
-	cmd := exec.Command("bd", "show", beadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	// Run from town root so bd can find routes.jsonl for prefix-based routing.
+	if townRoot, err := workspace.FindFromCwd(); err == nil {
+		cmd.Dir = townRoot
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("bead '%s' not found", beadID)
@@ -678,13 +778,13 @@ func resolveSelfTarget() (agentID string, pane string, hookRoot string, err erro
 // Formulas are TOML files (.formula.toml).
 func verifyFormulaExists(formulaName string) error {
 	// Try bd formula show (handles all formula file formats)
-	cmd := exec.Command("bd", "formula", "show", formulaName)
+	cmd := exec.Command("bd", "--no-daemon", "formula", "show", formulaName)
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
 
 	// Try with mol- prefix
-	cmd = exec.Command("bd", "formula", "show", "mol-"+formulaName)
+	cmd = exec.Command("bd", "--no-daemon", "formula", "show", "mol-"+formulaName)
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
@@ -761,6 +861,7 @@ func runSlingFormula(args []string) error {
 					Naked:   slingNaked,
 					Account: slingAccount,
 					Create:  slingCreate,
+					Agent:   slingAgent,
 				}
 				spawnInfo, spawnErr := SpawnPolecatForSling(rigName, spawnOpts)
 				if spawnErr != nil {
@@ -807,7 +908,7 @@ func runSlingFormula(args []string) error {
 
 	// Step 1: Cook the formula (ensures proto exists)
 	fmt.Printf("  Cooking formula...\n")
-	cookArgs := []string{"cook", formulaName}
+	cookArgs := []string{"--no-daemon", "cook", formulaName}
 	cookCmd := exec.Command("bd", cookArgs...)
 	cookCmd.Stderr = os.Stderr
 	if err := cookCmd.Run(); err != nil {
@@ -816,7 +917,7 @@ func runSlingFormula(args []string) error {
 
 	// Step 2: Create wisp instance (ephemeral)
 	fmt.Printf("  Creating wisp...\n")
-	wispArgs := []string{"mol", "wisp", formulaName}
+	wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName}
 	for _, v := range slingVars {
 		wispArgs = append(wispArgs, "--var", v)
 	}
@@ -841,11 +942,10 @@ func runSlingFormula(args []string) error {
 
 	fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispResult.RootID)
 
-	// Step 3: Hook the wisp bead using bd update (discovery-based approach)
-	// Set BEADS_DIR to town-level beads so hq-* beads are accessible
-	hookCmd := exec.Command("bd", "update", wispResult.RootID, "--status=hooked", "--assignee="+targetAgent)
-	hookCmd.Env = append(os.Environ(), "BEADS_DIR="+townBeadsDir)
-	hookCmd.Dir = townRoot
+	// Step 3: Hook the wisp bead using bd update.
+	// See: https://github.com/steveyegge/gastown/issues/148
+	hookCmd := exec.Command("bd", "--no-daemon", "update", wispResult.RootID, "--status=hooked", "--assignee="+targetAgent)
+	hookCmd.Dir = beads.ResolveHookDir(townRoot, wispResult.RootID, "")
 	hookCmd.Stderr = os.Stderr
 	if err := hookCmd.Run(); err != nil {
 		return fmt.Errorf("hooking wisp bead: %w", err)
@@ -861,6 +961,12 @@ func runSlingFormula(args []string) error {
 	// Update agent bead's hook_bead field (ZFC: agents track their current work)
 	// Note: formula slinging uses town root as workDir (no polecat-specific path)
 	updateAgentHookBead(targetAgent, wispResult.RootID, "", townBeadsDir)
+
+	// Store dispatcher in bead description (enables completion notification to dispatcher)
+	if err := storeDispatcherInBead(wispResult.RootID, actor); err != nil {
+		// Warn but don't fail - polecat will still complete work
+		fmt.Printf("%s Could not store dispatcher in bead: %v\n", style.Dim.Render("Warning:"), err)
+	}
 
 	// Store args in wisp bead if provided (no-tmux mode: beads as data plane)
 	if slingArgs != "" {
@@ -895,50 +1001,52 @@ func runSlingFormula(args []string) error {
 	return nil
 }
 
-// updateAgentHookBead updates the agent bead's state when work is slung.
+// updateAgentHookBead updates the agent bead's state and hook when work is slung.
 // This enables the witness to see that each agent is working.
 //
 // We run from the polecat's workDir (which redirects to the rig's beads database)
 // WITHOUT setting BEADS_DIR, so the redirect mechanism works for gt-* agent beads.
 //
-// Note: We only update the agent_state field, not hook_bead. The hook_bead field
-// requires cross-database access (agent in rig db, hook bead in town db), but
-// bd slot set has a bug where it doesn't support this. See BD_BUG_AGENT_STATE_ROUTING.md.
+// For rig-level beads (same database), we set the hook_bead slot directly.
+// For cross-database scenarios (agent in rig db, hook bead in town db),
+// the slot set may fail - this is handled gracefully with a warning.
 // The work is still correctly attached via `bd update <bead> --assignee=<agent>`.
-func updateAgentHookBead(agentID, _, workDir, townBeadsDir string) { // beadID unused due to BD_BUG_AGENT_STATE_ROUTING
+func updateAgentHookBead(agentID, beadID, workDir, townBeadsDir string) {
 	_ = townBeadsDir // Not used - BEADS_DIR breaks redirect mechanism
-
-	// Convert agent ID to agent bead ID
-	// Format examples (canonical: prefix-rig-role-name):
-	//   greenplace/crew/max -> gt-greenplace-crew-max
-	//   greenplace/polecats/Toast -> gt-greenplace-polecat-Toast
-	//   mayor -> gt-mayor
-	//   greenplace/witness -> gt-greenplace-witness
-	agentBeadID := agentIDToBeadID(agentID)
-	if agentBeadID == "" {
-		return
-	}
 
 	// Determine the directory to run bd commands from:
 	// - If workDir is provided (polecat's clone path), use it for redirect-based routing
 	// - Otherwise fall back to town root
 	bdWorkDir := workDir
+	townRoot, err := workspace.FindFromCwd()
+	if err != nil {
+		// Not in a Gas Town workspace - can't update agent bead
+		fmt.Fprintf(os.Stderr, "Warning: couldn't find town root to update agent hook: %v\n", err)
+		return
+	}
 	if bdWorkDir == "" {
-		townRoot, err := workspace.FindFromCwd()
-		if err != nil {
-			// Not in a Gas Town workspace - can't update agent bead
-			fmt.Fprintf(os.Stderr, "Warning: couldn't find town root to update agent hook: %v\n", err)
-			return
-		}
 		bdWorkDir = townRoot
 	}
 
+	// Convert agent ID to agent bead ID
+	// Format examples (canonical: prefix-rig-role-name):
+	//   greenplace/crew/max -> gt-greenplace-crew-max
+	//   greenplace/polecats/Toast -> gt-greenplace-polecat-Toast
+	//   mayor -> hq-mayor
+	//   greenplace/witness -> gt-greenplace-witness
+	agentBeadID := agentIDToBeadID(agentID, townRoot)
+	if agentBeadID == "" {
+		return
+	}
+
 	// Run from workDir WITHOUT BEADS_DIR to enable redirect-based routing.
-	// Only update agent_state (not hook_bead) due to bd cross-database bug.
+	// Set hook_bead to the slung work (gt-zecmc: removed agent_state update).
+	// Agent liveness is observable from tmux - no need to record it in bead.
+	// For cross-database scenarios, slot set may fail gracefully (warning only).
 	bd := beads.New(bdWorkDir)
-	if err := bd.UpdateAgentState(agentBeadID, "running", nil); err != nil {
+	if err := bd.SetHookBead(agentBeadID, beadID); err != nil {
 		// Log warning instead of silent ignore - helps debug cross-beads issues
-		fmt.Fprintf(os.Stderr, "Warning: couldn't update agent %s state: %v\n", agentBeadID, err)
+		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s hook: %v\n", agentBeadID, err)
 		return
 	}
 }
@@ -973,7 +1081,8 @@ func detectActor() string {
 // Uses canonical naming: prefix-rig-role-name
 // Town-level agents (Mayor, Deacon) use hq- prefix and are stored in town beads.
 // Rig-level agents use the rig's configured prefix (default "gt-").
-func agentIDToBeadID(agentID string) string {
+// townRoot is needed to look up the rig's configured prefix.
+func agentIDToBeadID(agentID, townRoot string) string {
 	// Handle simple cases (town-level agents with hq- prefix)
 	if agentID == "mayor" {
 		return beads.MayorBeadIDTown()
@@ -989,32 +1098,19 @@ func agentIDToBeadID(agentID string) string {
 	}
 
 	rig := parts[0]
+	prefix := config.GetRigPrefix(townRoot, rig)
 
 	switch {
 	case len(parts) == 2 && parts[1] == "witness":
-		return beads.WitnessBeadID(rig)
+		return beads.WitnessBeadIDWithPrefix(prefix, rig)
 	case len(parts) == 2 && parts[1] == "refinery":
-		return beads.RefineryBeadID(rig)
+		return beads.RefineryBeadIDWithPrefix(prefix, rig)
 	case len(parts) == 3 && parts[1] == "crew":
-		return beads.CrewBeadID(rig, parts[2])
+		return beads.CrewBeadIDWithPrefix(prefix, rig, parts[2])
 	case len(parts) == 3 && parts[1] == "polecats":
-		return beads.PolecatBeadID(rig, parts[2])
+		return beads.PolecatBeadIDWithPrefix(prefix, rig, parts[2])
 	default:
 		return ""
-	}
-}
-
-// qualityToFormula converts a quality level to the corresponding polecat workflow formula.
-func qualityToFormula(quality string) (string, error) {
-	switch strings.ToLower(quality) {
-	case "basic", "b":
-		return "mol-polecat-basic", nil
-	case "shiny", "s":
-		return "mol-polecat-shiny", nil
-	case "chrome", "c":
-		return "mol-polecat-chrome", nil
-	default:
-		return "", fmt.Errorf("invalid quality level '%s' (use: basic, shiny, or chrome)", quality)
 	}
 }
 
@@ -1231,7 +1327,7 @@ func createAutoConvoy(beadID, beadTitle string) (string, error) {
 		"--description=" + description,
 	}
 
-	createCmd := exec.Command("bd", createArgs...)
+	createCmd := exec.Command("bd", append([]string{"--no-daemon"}, createArgs...)...)
 	createCmd.Dir = townBeads
 	createCmd.Stderr = os.Stderr
 
@@ -1240,7 +1336,8 @@ func createAutoConvoy(beadID, beadTitle string) (string, error) {
 	}
 
 	// Add tracking relation: convoy tracks the issue
-	depArgs := []string{"dep", "add", convoyID, beadID, "--type=tracks"}
+	trackBeadID := formatTrackBeadID(beadID)
+	depArgs := []string{"--no-daemon", "dep", "add", convoyID, trackBeadID, "--type=tracks"}
 	depCmd := exec.Command("bd", depArgs...)
 	depCmd.Dir = townBeads
 	depCmd.Stderr = os.Stderr
@@ -1278,10 +1375,10 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 
 	// Track results for summary
 	type slingResult struct {
-		beadID   string
-		polecat  string
-		success  bool
-		errMsg   string
+		beadID  string
+		polecat string
+		success bool
+		errMsg  string
 	}
 	results := make([]slingResult, 0, len(beadIDs))
 
@@ -1310,6 +1407,7 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 			Account:  slingAccount,
 			Create:   slingCreate,
 			HookBead: beadID, // Set atomically at spawn time
+			Agent:    slingAgent,
 		}
 		spawnInfo, err := SpawnPolecatForSling(rigName, spawnOpts)
 		if err != nil {
@@ -1336,12 +1434,10 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 			}
 		}
 
-		// Hook the bead
-		hookCmd := exec.Command("bd", "update", beadID, "--status=hooked", "--assignee="+targetAgent)
-		hookCmd.Env = append(os.Environ(), "BEADS_DIR="+townBeadsDir)
-		if hookWorkDir != "" {
-			hookCmd.Dir = hookWorkDir
-		}
+		// Hook the bead. See: https://github.com/steveyegge/gastown/issues/148
+		townRoot := filepath.Dir(townBeadsDir)
+		hookCmd := exec.Command("bd", "--no-daemon", "update", beadID, "--status=hooked", "--assignee="+targetAgent)
+		hookCmd.Dir = beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
 		hookCmd.Stderr = os.Stderr
 		if err := hookCmd.Run(); err != nil {
 			results = append(results, slingResult{beadID: beadID, polecat: spawnInfo.PolecatName, success: false, errMsg: "hook failed"})
@@ -1398,4 +1494,25 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 	}
 
 	return nil
+}
+
+// formatTrackBeadID formats a bead ID for use in convoy tracking dependencies.
+// Cross-rig beads (non-hq- prefixed) are formatted as external references
+// so the bd tool can resolve them when running from HQ context.
+//
+// Examples:
+//   - "hq-abc123" -> "hq-abc123" (HQ beads unchanged)
+//   - "gt-mol-xyz" -> "external:gt-mol:gt-mol-xyz"
+//   - "beads-task-123" -> "external:beads-task:beads-task-123"
+func formatTrackBeadID(beadID string) string {
+	if strings.HasPrefix(beadID, "hq-") {
+		return beadID
+	}
+	parts := strings.SplitN(beadID, "-", 3)
+	if len(parts) >= 2 {
+		rigPrefix := parts[0] + "-" + parts[1]
+		return fmt.Sprintf("external:%s:%s", rigPrefix, beadID)
+	}
+	// Fallback for malformed IDs (single segment)
+	return beadID
 }

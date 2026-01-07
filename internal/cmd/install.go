@@ -188,6 +188,15 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   ✓ Created .claude/settings.json\n")
 	}
 
+	// Initialize git BEFORE beads so that bd can compute repository fingerprint.
+	// The fingerprint is required for the daemon to start properly.
+	if installGit || installGitHub != "" {
+		fmt.Println()
+		if err := InitGitForHarness(absPath, installGitHub, !installPublic); err != nil {
+			return fmt.Errorf("git initialization failed: %w", err)
+		}
+	}
+
 	// Initialize town-level beads database (optional)
 	// Town beads (hq- prefix) stores mayor mail, cross-rig coordination, and handoffs.
 	// Rig beads are separate and have their own prefixes.
@@ -234,14 +243,6 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   ✓ Created .claude/commands/ (slash commands for all agents)\n")
 	}
 
-	// Initialize git if requested (--git or --github implies --git)
-	if installGit || installGitHub != "" {
-		fmt.Println()
-		if err := InitGitForHarness(absPath, installGitHub, !installPublic); err != nil {
-			return fmt.Errorf("git initialization failed: %w", err)
-		}
-	}
-
 	fmt.Printf("\n%s HQ created successfully!\n", style.Bold.Render("✓"))
 	fmt.Println()
 	fmt.Println("Next steps:")
@@ -251,6 +252,8 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		step++
 	}
 	fmt.Printf("  %d. Add a rig: %s\n", step, style.Dim.Render("gt rig add <name> <git-url>"))
+	step++
+	fmt.Printf("  %d. (Optional) Configure agents: %s\n", step, style.Dim.Render("gt config agent list"))
 	step++
 	fmt.Printf("  %d. Enter the Mayor's office: %s\n", step, style.Dim.Render("gt mayor attach"))
 
@@ -271,6 +274,7 @@ func createMayorCLAUDEmd(hqRoot, townRoot string) error {
 		TownRoot:      townRoot,
 		TownName:      townName,
 		WorkDir:       hqRoot,
+		DefaultBranch: "main", // Mayor doesn't merge, but field required
 		MayorSession:  session.MayorSessionName(),
 		DeaconSession: session.DeaconSessionName(),
 	}
@@ -335,9 +339,9 @@ func ensureRepoFingerprint(beadsPath string) error {
 
 // initTownAgentBeads creates town-level agent and role beads using hq- prefix.
 // This creates:
-// - hq-mayor, hq-deacon (agent beads for town-level agents)
-// - hq-mayor-role, hq-deacon-role, hq-witness-role, hq-refinery-role,
-//   hq-polecat-role, hq-crew-role (role definition beads)
+//   - hq-mayor, hq-deacon (agent beads for town-level agents)
+//   - hq-mayor-role, hq-deacon-role, hq-witness-role, hq-refinery-role,
+//     hq-polecat-role, hq-crew-role (role definition beads)
 //
 // These beads are stored in town beads (~/gt/.beads/) and are shared across all rigs.
 // Rig-level agent beads (witness, refinery) are created by gt rig add in rig beads.
