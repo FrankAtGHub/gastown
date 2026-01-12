@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/claude"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/templates"
-	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 // Common errors
@@ -125,9 +125,14 @@ func (m *Manager) loadRig(name string, entry config.RigEntry) (*Rig, error) {
 	polecatsDir := filepath.Join(rigPath, "polecats")
 	if entries, err := os.ReadDir(polecatsDir); err == nil {
 		for _, e := range entries {
-			if e.IsDir() {
-				rig.Polecats = append(rig.Polecats, e.Name())
+			if !e.IsDir() {
+				continue
 			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			rig.Polecats = append(rig.Polecats, name)
 		}
 	}
 
@@ -364,6 +369,10 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 				if output, err := cmd.CombinedOutput(); err != nil {
 					fmt.Printf("  Warning: Could not init bd database: %v (%s)\n", err, strings.TrimSpace(string(output)))
 				}
+				// Configure custom types for Gas Town (beads v0.46.0+)
+				configCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+				configCmd.Dir = mayorRigPath
+				_, _ = configCmd.CombinedOutput() // Ignore errors - older beads don't need this
 			}
 		}
 	}
@@ -380,6 +389,15 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 		return nil, fmt.Errorf("initializing beads: %w", err)
 	}
 	fmt.Printf("   ✓ Initialized beads (prefix: %s)\n", opts.BeadsPrefix)
+
+	// Provision PRIME.md with Gas Town context for all workers in this rig.
+	// This is the fallback if SessionStart hook fails - ensures ALL workers
+	// (crew, polecats, refinery, witness) have GUPP and essential Gas Town context.
+	// PRIME.md is read by bd prime and output to the agent.
+	rigBeadsPath := filepath.Join(rigPath, ".beads")
+	if err := beads.ProvisionPrimeMD(rigBeadsPath); err != nil {
+		fmt.Printf("  Warning: Could not provision PRIME.md: %v\n", err)
+	}
 
 	// Create refinery as worktree from bare repo on default branch.
 	// Refinery needs to see polecat branches (shared .repo.git) and merges them.
@@ -400,6 +418,12 @@ func (m *Manager) AddRig(opts AddRigOptions) (*Rig, error) {
 	// Create refinery CLAUDE.md (overrides any from cloned repo)
 	if err := m.createRoleCLAUDEmd(refineryRigPath, "refinery", opts.Name, ""); err != nil {
 		return nil, fmt.Errorf("creating refinery CLAUDE.md: %w", err)
+	}
+	// Create refinery hooks for patrol triggering (at refinery/ level, not rig/)
+	refineryPath := filepath.Dir(refineryRigPath)
+	runtimeConfig := config.LoadRuntimeConfig(rigPath)
+	if err := m.createPatrolHooks(refineryPath, runtimeConfig); err != nil {
+		fmt.Printf("  Warning: Could not create refinery hooks: %v\n", err)
 	}
 
 	// Create empty crew directory with README (crew members added via gt crew add)
@@ -435,12 +459,43 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	if err := os.MkdirAll(witnessPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating witness dir: %w", err)
 	}
+	// Create witness hooks for patrol triggering
+	if err := m.createPatrolHooks(witnessPath, runtimeConfig); err != nil {
+		fmt.Printf("  Warning: Could not create witness hooks: %v\n", err)
+	}
 
 	// Create polecats directory (empty)
 	polecatsPath := filepath.Join(rigPath, "polecats")
 	if err := os.MkdirAll(polecatsPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating polecats dir: %w", err)
 	}
+
+	// Install Claude settings for all agent directories.
+	// Settings are placed in parent directories (not inside git repos) so Claude
+	// finds them via directory traversal without polluting source repos.
+	fmt.Printf("  Installing Claude settings...\n")
+	settingsRoles := []struct {
+		dir  string
+		role string
+	}{
+		{witnessPath, "witness"},
+		{filepath.Join(rigPath, "refinery"), "refinery"},
+		{crewPath, "crew"},
+		{polecatsPath, "polecat"},
+	}
+	for _, sr := range settingsRoles {
+		if err := claude.EnsureSettingsForRole(sr.dir, sr.role); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: Could not create %s settings: %v\n", sr.role, err)
+		}
+	}
+	fmt.Printf("   ✓ Installed Claude settings\n")
+
+	// Initialize beads at rig level
+	fmt.Printf("  Initializing beads database...\n")
+	if err := m.initBeads(rigPath, opts.BeadsPrefix); err != nil {
+		return nil, fmt.Errorf("initializing beads: %w", err)
+	}
+	fmt.Printf("   ✓ Initialized beads (prefix: %s)\n", opts.BeadsPrefix)
 
 	// Create rig-level agent beads (witness, refinery) in rig beads.
 	// Town-level agents (mayor, deacon) are created by gt install in town beads.
@@ -557,6 +612,14 @@ func (m *Manager) initBeads(rigPath, prefix string) error {
 		}
 	}
 
+	// Configure custom types for Gas Town (agent, role, rig, convoy).
+	// These were extracted from beads core in v0.46.0 and now require explicit config.
+	configCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+	configCmd.Dir = rigPath
+	configCmd.Env = filteredEnv
+	// Ignore errors - older beads versions don't need this
+	_, _ = configCmd.CombinedOutput()
+
 	// Ensure database has repository fingerprint (GH #25).
 	// This is idempotent - safe on both new and legacy (pre-0.17.5) databases.
 	// Without fingerprint, the bd daemon fails to start silently.
@@ -574,6 +637,11 @@ func (m *Manager) initBeads(rigPath, prefix string) error {
 		// Non-fatal: role slot set will fail but agent beads still work
 		fmt.Printf("   ⚠ Could not add route to town beads: %v\n", err)
 	}
+
+	typesCmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+	typesCmd.Dir = rigPath
+	typesCmd.Env = filteredEnv
+	_, _ = typesCmd.CombinedOutput()
 
 	return nil
 }
@@ -692,6 +760,11 @@ func deriveBeadsPrefix(name string) string {
 		return r == '-' || r == '_'
 	})
 
+	// If single part, try to detect compound words (e.g., "gastown" -> "gas" + "town")
+	if len(parts) == 1 {
+		parts = splitCompoundWord(parts[0])
+	}
+
 	if len(parts) >= 2 {
 		// Take first letter of each part: "gas-town" -> "gt"
 		prefix := ""
@@ -708,6 +781,27 @@ func deriveBeadsPrefix(name string) string {
 		return strings.ToLower(name)
 	}
 	return strings.ToLower(name[:2])
+}
+
+// splitCompoundWord attempts to split a compound word into its components.
+// Common suffixes like "town", "ville", "port" are detected to split
+// compound names (e.g., "gastown" -> ["gas", "town"]).
+func splitCompoundWord(word string) []string {
+	word = strings.ToLower(word)
+
+	// Common suffixes for compound place names
+	suffixes := []string{"town", "ville", "port", "place", "land", "field", "wood", "ford"}
+
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(word, suffix) && len(word) > len(suffix) {
+			prefix := word[:len(word)-len(suffix)]
+			if len(prefix) > 0 {
+				return []string{prefix, suffix}
+			}
+		}
+	}
+
+	return []string{word}
 }
 
 // detectBeadsPrefixFromConfig reads the issue prefix from a beads config.yaml file.
@@ -810,46 +904,134 @@ func (m *Manager) ListRigNames() []string {
 	return names
 }
 
-// createRoleCLAUDEmd creates a CLAUDE.md file with role-specific context.
-// This ensures each workspace (crew, refinery, mayor) gets the correct prompting,
-// overriding any CLAUDE.md that may exist in the cloned repository.
+// createRoleCLAUDEmd creates a minimal bootstrap pointer CLAUDE.md file.
+// Full context is injected ephemerally by `gt prime` at session start.
+// This keeps on-disk files small (<30 lines) per the priming architecture.
 func (m *Manager) createRoleCLAUDEmd(workspacePath string, role string, rigName string, workerName string) error {
-	tmpl, err := templates.New()
-	if err != nil {
-		return err
-	}
+	// Create role-specific bootstrap pointer
+	var bootstrap string
+	switch role {
+	case "mayor":
+		bootstrap = `# Mayor Context (` + rigName + `)
 
-	// Get town name for session names
-	townName, _ := workspace.GetTownName(m.townRoot)
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
 
-	// Get default branch from rig config (default to "main" if not set)
-	defaultBranch := "main"
-	if rigName != "" {
-		rigPath := filepath.Join(m.townRoot, rigName)
-		if rigCfg, err := LoadRigConfig(rigPath); err == nil && rigCfg.DefaultBranch != "" {
-			defaultBranch = rigCfg.DefaultBranch
+Full context is injected by ` + "`gt prime`" + ` at session start.
+`
+	case "refinery":
+		bootstrap = `# Refinery Context (` + rigName + `)
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check MQ: ` + "`gt mq list`" + `
+- Process next: ` + "`gt mq process`" + `
+`
+	case "crew":
+		name := workerName
+		if name == "" {
+			name = "worker"
 		}
-	}
+		bootstrap = `# Crew Context (` + rigName + `/` + name + `)
 
-	data := templates.RoleData{
-		Role:          role,
-		RigName:       rigName,
-		TownRoot:      m.townRoot,
-		TownName:      townName,
-		WorkDir:       workspacePath,
-		DefaultBranch: defaultBranch,
-		Polecat:       workerName, // Used for crew member name as well
-		MayorSession:  fmt.Sprintf("gt-%s-mayor", townName),
-		DeaconSession: fmt.Sprintf("gt-%s-deacon", townName),
-	}
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
 
-	content, err := tmpl.RenderRole(role, data)
-	if err != nil {
-		return err
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check hook: ` + "`gt hook`" + `
+- Check mail: ` + "`gt mail inbox`" + `
+`
+	case "polecat":
+		name := workerName
+		if name == "" {
+			name = "worker"
+		}
+		bootstrap = `# Polecat Context (` + rigName + `/` + name + `)
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+
+## Quick Reference
+
+- Check hook: ` + "`gt hook`" + `
+- Report done: ` + "`gt done`" + `
+`
+	default:
+		bootstrap = `# Agent Context
+
+> **Recovery**: Run ` + "`gt prime`" + ` after compaction, clear, or new session
+
+Full context is injected by ` + "`gt prime`" + ` at session start.
+`
 	}
 
 	claudePath := filepath.Join(workspacePath, "CLAUDE.md")
-	return os.WriteFile(claudePath, []byte(content), 0644)
+	return os.WriteFile(claudePath, []byte(bootstrap), 0644)
+}
+
+// createPatrolHooks creates .claude/settings.json with hooks for patrol roles.
+// These hooks trigger gt prime on session start and inject mail, enabling
+// autonomous patrol execution for Witness and Refinery roles.
+func (m *Manager) createPatrolHooks(workspacePath string, runtimeConfig *config.RuntimeConfig) error {
+	if runtimeConfig == nil || runtimeConfig.Hooks == nil || runtimeConfig.Hooks.Provider != "claude" {
+		return nil
+	}
+	if runtimeConfig.Hooks.Dir == "" || runtimeConfig.Hooks.SettingsFile == "" {
+		return nil
+	}
+
+	settingsDir := filepath.Join(workspacePath, runtimeConfig.Hooks.Dir)
+	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+		return fmt.Errorf("creating settings dir: %w", err)
+	}
+
+	// Standard patrol hooks - same as deacon
+	hooksJSON := `{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gt prime && gt mail check --inject"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gt prime"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gt mail check --inject"
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+	settingsPath := filepath.Join(settingsDir, runtimeConfig.Hooks.SettingsFile)
+	return os.WriteFile(settingsPath, []byte(hooksJSON), 0600)
 }
 
 // seedPatrolMolecules creates patrol molecule prototypes in the rig's beads database.

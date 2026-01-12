@@ -61,9 +61,18 @@ func TestInstallCreatesCorrectStructure(t *testing.T) {
 		t.Errorf("rigs.json should be empty, got %d rigs", len(rigsConfig.Rigs))
 	}
 
-	// Verify CLAUDE.md exists
-	claudePath := filepath.Join(hqPath, "CLAUDE.md")
-	assertFileExists(t, claudePath, "CLAUDE.md")
+	// Verify CLAUDE.md exists in mayor/ (not town root, to avoid inheritance pollution)
+	claudePath := filepath.Join(hqPath, "mayor", "CLAUDE.md")
+	assertFileExists(t, claudePath, "mayor/CLAUDE.md")
+
+	// Verify Claude settings exist in mayor/.claude/ (not town root/.claude/)
+	// Mayor settings go here to avoid polluting child workspaces via directory traversal
+	mayorSettingsPath := filepath.Join(hqPath, "mayor", ".claude", "settings.json")
+	assertFileExists(t, mayorSettingsPath, "mayor/.claude/settings.json")
+
+	// Verify deacon settings exist in deacon/.claude/
+	deaconSettingsPath := filepath.Join(hqPath, "deacon", ".claude", "settings.json")
+	assertFileExists(t, deaconSettingsPath, "deacon/.claude/settings.json")
 }
 
 // TestInstallBeadsHasCorrectPrefix validates that beads is initialized
@@ -133,6 +142,21 @@ func TestInstallTownRoleSlots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gt install failed: %v\nOutput: %s", err, output)
 	}
+
+	// Log install output for CI debugging
+	t.Logf("gt install output:\n%s", output)
+
+	// Verify beads directory was created
+	beadsDir := filepath.Join(hqPath, ".beads")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		t.Fatalf("beads directory not created at %s", beadsDir)
+	}
+
+	// List beads for debugging
+	listCmd := exec.Command("bd", "--no-daemon", "list", "--type=agent")
+	listCmd.Dir = hqPath
+	listOutput, _ := listCmd.CombinedOutput()
+	t.Logf("bd list --type=agent output:\n%s", listOutput)
 
 	assertSlotValue(t, hqPath, "hq-mayor", "role", "hq-mayor-role")
 	assertSlotValue(t, hqPath, "hq-deacon", "role", "hq-deacon-role")
@@ -223,6 +247,61 @@ func TestInstallFormulasProvisioned(t *testing.T) {
 	// Should have at least 20 formulas (allows for some variation)
 	if fileCount < 20 {
 		t.Errorf("expected at least 20 formulas, got %d", fileCount)
+	}
+}
+
+// TestInstallWrappersInExistingTown validates that --wrappers works in an
+// existing town without requiring --force or recreating HQ structure.
+func TestInstallWrappersInExistingTown(t *testing.T) {
+	tmpDir := t.TempDir()
+	hqPath := filepath.Join(tmpDir, "test-hq")
+	binDir := filepath.Join(tmpDir, "bin")
+
+	// Create bin directory for wrappers
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+
+	gtBinary := buildGT(t)
+
+	// First: create HQ without wrappers
+	cmd := exec.Command(gtBinary, "install", hqPath, "--no-beads")
+	cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("first install failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify town.json exists (proves HQ was created)
+	townPath := filepath.Join(hqPath, "mayor", "town.json")
+	assertFileExists(t, townPath, "mayor/town.json")
+
+	// Get modification time of town.json before wrapper install
+	townInfo, err := os.Stat(townPath)
+	if err != nil {
+		t.Fatalf("failed to stat town.json: %v", err)
+	}
+	townModBefore := townInfo.ModTime()
+
+	// Second: install --wrappers in same directory (should not recreate HQ)
+	cmd = exec.Command(gtBinary, "install", hqPath, "--wrappers")
+	cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install --wrappers in existing town failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify town.json was NOT modified (HQ was not recreated)
+	townInfo, err = os.Stat(townPath)
+	if err != nil {
+		t.Fatalf("failed to stat town.json after wrapper install: %v", err)
+	}
+	if townInfo.ModTime() != townModBefore {
+		t.Errorf("town.json was modified during --wrappers install, HQ should not be recreated")
+	}
+
+	// Verify output mentions wrapper installation
+	if !strings.Contains(string(output), "gt-codex") && !strings.Contains(string(output), "gt-opencode") {
+		t.Errorf("expected output to mention wrappers, got: %s", output)
 	}
 }
 

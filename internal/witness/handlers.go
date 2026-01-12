@@ -3,6 +3,7 @@ package witness
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -686,7 +687,9 @@ type NukePolecatResult struct {
 }
 
 // AutoNukeIfClean checks if a polecat is safe to nuke and nukes it if so.
-// This is used for idle polecats with no pending MR - they can be nuked immediately.
+// This is used for orphaned polecats (no hooked work, no pending MR).
+// With the self-cleaning model, polecats should self-nuke on completion.
+// An orphan is likely from a crash before gt done completed.
 // Returns whether the nuke was performed and any error.
 func AutoNukeIfClean(workDir, rigName, polecatName string) *NukePolecatResult {
 	result := &NukePolecatResult{}
@@ -760,8 +763,14 @@ func verifyCommitOnMain(workDir, rigName, polecatName string) (bool, error) {
 		defaultBranch = rigCfg.DefaultBranch
 	}
 
-	// Construct polecat path: <townRoot>/<rigName>/polecats/<polecatName>
-	polecatPath := filepath.Join(townRoot, rigName, "polecats", polecatName)
+	// Construct polecat path, handling both new and old structures
+	// New structure: polecats/<name>/<rigname>/
+	// Old structure: polecats/<name>/
+	polecatPath := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
+	if _, err := os.Stat(polecatPath); os.IsNotExist(err) {
+		// Fall back to old structure
+		polecatPath = filepath.Join(townRoot, rigName, "polecats", polecatName)
+	}
 
 	// Get git for the polecat worktree
 	g := git.NewGit(polecatPath)

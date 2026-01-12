@@ -77,6 +77,8 @@ Work tracking units. Bundle multiple issues/tasks that get assigned to agents.
 
 Git-backed issue tracking system that stores work state as structured data.
 
+> **New to Gas Town?** See the [Glossary](docs/glossary.md) for a complete guide to terminology and concepts.
+
 ## Installation
 
 ### Prerequisites
@@ -85,7 +87,8 @@ Git-backed issue tracking system that stores work state as structured data.
 - **Git 2.25+** - for worktree support
 - **beads (bd) 0.44.0+** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads) (required for custom type support)
 - **tmux 3.0+** - recommended for full experience
-- **Claude Code CLI** - [claude.ai/code](https://claude.ai/code)
+- **Claude Code CLI** (default runtime) - [claude.ai/code](https://claude.ai/code)
+- **Codex CLI** (optional runtime) - [developers.openai.com/codex/cli](https://developers.openai.com/codex/cli)
 
 ### Setup
 
@@ -180,32 +183,63 @@ gt convoy create "Auth System" issue-101 issue-102 --notify
 gt convoy list
 ```
 
+### Minimal Mode (No Tmux)
+
+Run individual runtime instances manually. Gas Town just tracks state.
+
+```bash
+gt convoy create "Fix bugs" issue-123  # Create convoy (sling auto-creates if skipped)
+gt sling issue-123 myproject           # Assign to worker
+claude --resume                        # Agent reads mail, runs work (Claude)
+# or: codex                            # Start Codex in the workspace
+gt convoy list                         # Check progress
+```
+
 ### Beads Formula Workflow
 
 **Best for:** Predefined, repeatable processes
 
-Formulas are YAML-defined workflows stored in `.beads/formulas/`.
+Formulas are TOML-defined workflows stored in `.beads/formulas/`.
 
-**Example Formula** (`.beads/formulas/release.yaml`):
+**Example Formula** (`.beads/formulas/release.formula.toml`):
 
-```yaml
-formula: release
-description: Standard release process
-steps:
-  - name: bump-version
-    command: ./scripts/bump-version.sh {{version}}
+```toml
+description = "Standard release process"
+formula = "release"
+version = 1
 
-  - name: run-tests
-    command: make test
+[vars.version]
+description = "The semantic version to release (e.g., 1.2.0)"
+required = true
 
-  - name: build
-    command: make build
+[[steps]]
+id = "bump-version"
+title = "Bump version"
+description = "Run ./scripts/bump-version.sh {{version}}"
 
-  - name: create-tag
-    command: git tag -a v{{version}} -m "Release v{{version}}"
+[[steps]]
+id = "run-tests"
+title = "Run tests"
+description = "Run make test"
+needs = ["bump-version"]
 
-  - name: publish
-    command: ./scripts/publish.sh
+[[steps]]
+id = "build"
+title = "Build"
+description = "Run make build"
+needs = ["run-tests"]
+
+[[steps]]
+id = "create-tag"
+title = "Create release tag"
+description = "Run git tag -a v{{version}} -m 'Release v{{version}}'"
+needs = ["build"]
+
+[[steps]]
+id = "publish"
+title = "Publish"
+description = "Run ./scripts/publish.sh"
+needs = ["create-tag"]
 ```
 
 **Execute:**
@@ -239,6 +273,30 @@ gt sling bug-101 myproject/my-agent
 gt convoy show
 ```
 
+## Runtime Configuration
+
+Gas Town supports multiple AI coding runtimes. Per-rig runtime settings are in `settings/config.json`.
+
+```json
+{
+  "runtime": {
+    "provider": "codex",
+    "command": "codex",
+    "args": [],
+    "prompt_mode": "none"
+  }
+}
+```
+
+**Notes:**
+
+- Claude uses hooks in `.claude/settings.json` for mail injection and startup.
+- For Codex, set `project_doc_fallback_filenames = ["CLAUDE.md"]` in
+  `~/.codex/config.toml` so role instructions are picked up.
+- For runtimes without hooks (e.g., Codex), Gas Town sends a startup fallback
+  after the session is ready: `gt prime`, optional `gt mail check --inject`
+  for autonomous roles, and `gt nudge deacon session-started`.
+
 ## Key Commands
 
 ### Workspace Management
@@ -255,11 +313,13 @@ gt crew add <name> --rig <rig>  # Create crew workspace
 ```bash
 gt agents                   # List active agents
 gt sling <issue> <rig>      # Assign work to agent
-gt sling <issue> <rig> --agent codex    # Override runtime for this sling/spawn
+gt sling <issue> <rig> --agent cursor   # Override runtime for this sling/spawn
 gt mayor attach             # Start Mayor session
-gt mayor start --agent gemini           # Run Mayor with a specific agent alias
+gt mayor start --agent auggie           # Run Mayor with a specific agent alias
 gt prime                    # Alternative to mayor attach
 ```
+
+**Built-in agent presets**: `claude`, `gemini`, `codex`, `cursor`, `auggie`, `amp`
 
 ### Convoy (Work Tracking)
 
@@ -292,6 +352,10 @@ bd cook <formula>           # Execute formula
 bd mol pour <formula>       # Create trackable instance
 bd mol list                 # List active instances
 ```
+
+## Cooking Formulas
+
+Gas Town includes built-in formulas for common workflows. See `.beads/formulas/` for available recipes.
 
 ## Dashboard
 

@@ -84,19 +84,16 @@ func TestIsBeadsRepo(t *testing.T) {
 }
 
 // TestWrapError tests error wrapping.
+// ZFC: Only test ErrNotFound detection. ErrNotARepo and ErrSyncConflict
+// were removed as per ZFC - agents should handle those errors directly.
 func TestWrapError(t *testing.T) {
 	b := New("/test")
 
 	tests := []struct {
-		stderr   string
-		wantErr  error
-		wantNil  bool
+		stderr  string
+		wantErr error
+		wantNil bool
 	}{
-		{"not a beads repository", ErrNotARepo, false},
-		{"No .beads directory found", ErrNotARepo, false},
-		{".beads directory not found", ErrNotARepo, false},
-		{"sync conflict detected", ErrSyncConflict, false},
-		{"CONFLICT in file.md", ErrSyncConflict, false},
 		{"Issue not found: gt-xyz", ErrNotFound, false},
 		{"gt-xyz not found", ErrNotFound, false},
 	}
@@ -127,7 +124,6 @@ func TestIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Walk up to find .beads
 	dir := cwd
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".beads")); err == nil {
@@ -140,13 +136,24 @@ func TestIntegration(t *testing.T) {
 		dir = parent
 	}
 
+	// Resolve the actual beads directory (following redirect if present)
+	// In multi-worktree setups, worktrees have .beads/redirect pointing to
+	// the canonical beads location (e.g., mayor/rig/.beads)
+	beadsDir := ResolveBeadsDir(dir)
+	dbPath := filepath.Join(beadsDir, "beads.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		t.Skip("no beads.db found (JSONL-only repo)")
+	}
+
 	b := New(dir)
 
 	// Sync database with JSONL before testing to avoid "Database out of sync" errors.
 	// This can happen when JSONL is updated (e.g., by git pull) but the SQLite database
 	// hasn't been imported yet. Running sync --import-only ensures we test against
 	// consistent data and prevents flaky test failures.
-	syncCmd := exec.Command("bd", "--no-daemon", "sync", "--import-only")
+	// We use --allow-stale to handle cases where the daemon is actively writing and
+	// the staleness check would otherwise fail spuriously.
+	syncCmd := exec.Command("bd", "--no-daemon", "--allow-stale", "sync", "--import-only")
 	syncCmd.Dir = dir
 	if err := syncCmd.Run(); err != nil {
 		// If sync fails (e.g., no database exists), just log and continue
@@ -201,10 +208,10 @@ func TestIntegration(t *testing.T) {
 // TestParseMRFields tests parsing MR fields from issue descriptions.
 func TestParseMRFields(t *testing.T) {
 	tests := []struct {
-		name        string
-		issue       *Issue
-		wantNil     bool
-		wantFields  *MRFields
+		name       string
+		issue      *Issue
+		wantNil    bool
+		wantFields *MRFields
 	}{
 		{
 			name:    "nil issue",
@@ -521,8 +528,8 @@ author: someone
 target: main`,
 			},
 			fields: &MRFields{
-				Branch:     "polecat/Capable/gt-ghi",
-				Target:     "integration/epic",
+				Branch:      "polecat/Capable/gt-ghi",
+				Target:      "integration/epic",
 				CloseReason: "merged",
 			},
 			want: `branch: polecat/Capable/gt-ghi
@@ -1032,10 +1039,10 @@ func TestParseAgentBeadID(t *testing.T) {
 		// Parseable but not valid agent roles (IsAgentSessionBead will reject)
 		{"gt-abc123", "", "abc123", "", true}, // Parses as town-level but not valid role
 		// Other prefixes (bd-, hq-)
-		{"bd-mayor", "", "mayor", "", true},                               // bd prefix town-level
-		{"bd-beads-witness", "beads", "witness", "", true},                // bd prefix rig-level singleton
-		{"bd-beads-polecat-pearl", "beads", "polecat", "pearl", true},     // bd prefix rig-level named
-		{"hq-mayor", "", "mayor", "", true},                               // hq prefix town-level
+		{"bd-mayor", "", "mayor", "", true},                           // bd prefix town-level
+		{"bd-beads-witness", "beads", "witness", "", true},            // bd prefix rig-level singleton
+		{"bd-beads-polecat-pearl", "beads", "polecat", "pearl", true}, // bd prefix rig-level named
+		{"hq-mayor", "", "mayor", "", true},                           // hq prefix town-level
 		// Truly invalid patterns
 		{"x-mayor", "", "", "", false},    // Prefix too short (1 char)
 		{"abcd-mayor", "", "", "", false}, // Prefix too long (4 chars)
@@ -1644,7 +1651,7 @@ func TestSetupRedirect(t *testing.T) {
 		}
 	})
 
-	t.Run("cleans existing tracked beads from worktree", func(t *testing.T) {
+	t.Run("cleans runtime files but preserves tracked files", func(t *testing.T) {
 		townRoot := t.TempDir()
 		rigRoot := filepath.Join(townRoot, "testrig")
 		rigBeads := filepath.Join(rigRoot, ".beads")
@@ -1654,27 +1661,43 @@ func TestSetupRedirect(t *testing.T) {
 		if err := os.MkdirAll(rigBeads, 0755); err != nil {
 			t.Fatalf("mkdir rig beads: %v", err)
 		}
-		// Simulate worktree with tracked .beads (has database files)
+		// Simulate worktree with both runtime and tracked files
 		if err := os.MkdirAll(crewBeads, 0755); err != nil {
 			t.Fatalf("mkdir crew beads: %v", err)
 		}
+		// Runtime files (should be removed)
 		if err := os.WriteFile(filepath.Join(crewBeads, "beads.db"), []byte("fake db"), 0644); err != nil {
 			t.Fatalf("write fake db: %v", err)
 		}
+		if err := os.WriteFile(filepath.Join(crewBeads, "issues.jsonl"), []byte("{}"), 0644); err != nil {
+			t.Fatalf("write issues.jsonl: %v", err)
+		}
+		// Tracked files (should be preserved)
 		if err := os.WriteFile(filepath.Join(crewBeads, "config.yaml"), []byte("prefix: test"), 0644); err != nil {
 			t.Fatalf("write config: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(crewBeads, "README.md"), []byte("# Beads"), 0644); err != nil {
+			t.Fatalf("write README: %v", err)
 		}
 
 		if err := SetupRedirect(townRoot, crewPath); err != nil {
 			t.Fatalf("SetupRedirect failed: %v", err)
 		}
 
-		// Verify old files were cleaned up
+		// Verify runtime files were cleaned up
 		if _, err := os.Stat(filepath.Join(crewBeads, "beads.db")); !os.IsNotExist(err) {
 			t.Error("beads.db should have been removed")
 		}
-		if _, err := os.Stat(filepath.Join(crewBeads, "config.yaml")); !os.IsNotExist(err) {
-			t.Error("config.yaml should have been removed")
+		if _, err := os.Stat(filepath.Join(crewBeads, "issues.jsonl")); !os.IsNotExist(err) {
+			t.Error("issues.jsonl should have been removed")
+		}
+
+		// Verify tracked files were preserved
+		if _, err := os.Stat(filepath.Join(crewBeads, "config.yaml")); err != nil {
+			t.Errorf("config.yaml should have been preserved: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(crewBeads, "README.md")); err != nil {
+			t.Errorf("README.md should have been preserved: %v", err)
 		}
 
 		// Verify redirect was created
@@ -1725,7 +1748,7 @@ func TestSetupRedirect(t *testing.T) {
 		rigRoot := filepath.Join(townRoot, "testrig")
 		crewPath := filepath.Join(rigRoot, "crew", "max")
 
-		// No rig/.beads created
+		// No rig/.beads or mayor/rig/.beads created
 		if err := os.MkdirAll(crewPath, 0755); err != nil {
 			t.Fatalf("mkdir crew: %v", err)
 		}
@@ -1733,6 +1756,46 @@ func TestSetupRedirect(t *testing.T) {
 		err := SetupRedirect(townRoot, crewPath)
 		if err == nil {
 			t.Error("SetupRedirect should fail if rig .beads missing")
+		}
+	})
+
+	t.Run("crew worktree with mayor/rig beads only", func(t *testing.T) {
+		// Setup: no rig/.beads, only mayor/rig/.beads exists
+		// This is the tracked beads architecture where rig root has no .beads directory
+		townRoot := t.TempDir()
+		rigRoot := filepath.Join(townRoot, "testrig")
+		mayorRigBeads := filepath.Join(rigRoot, "mayor", "rig", ".beads")
+		crewPath := filepath.Join(rigRoot, "crew", "max")
+
+		// Create only mayor/rig/.beads (no rig/.beads)
+		if err := os.MkdirAll(mayorRigBeads, 0755); err != nil {
+			t.Fatalf("mkdir mayor/rig beads: %v", err)
+		}
+		if err := os.MkdirAll(crewPath, 0755); err != nil {
+			t.Fatalf("mkdir crew: %v", err)
+		}
+
+		// Run SetupRedirect - should succeed and point to mayor/rig/.beads
+		if err := SetupRedirect(townRoot, crewPath); err != nil {
+			t.Fatalf("SetupRedirect failed: %v", err)
+		}
+
+		// Verify redirect points to mayor/rig/.beads
+		redirectPath := filepath.Join(crewPath, ".beads", "redirect")
+		content, err := os.ReadFile(redirectPath)
+		if err != nil {
+			t.Fatalf("read redirect: %v", err)
+		}
+
+		want := "../../mayor/rig/.beads\n"
+		if string(content) != want {
+			t.Errorf("redirect content = %q, want %q", string(content), want)
+		}
+
+		// Verify redirect resolves correctly
+		resolved := ResolveBeadsDir(crewPath)
+		if resolved != mayorRigBeads {
+			t.Errorf("resolved = %q, want %q", resolved, mayorRigBeads)
 		}
 	})
 }

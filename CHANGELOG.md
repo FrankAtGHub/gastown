@@ -7,6 +7,262 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-01-11
+
+### Added
+- **`gt mail mark-read`** - Mark messages as read without opening them (desire path)
+- **`gt down --polecats`** - Shut down polecats without affecting other components
+- **Self-cleaning polecat model** - Polecats self-nuke on completion, witness tracks leases
+- **`gt prime --state` validation** - Flag exclusivity checks for cleaner CLI
+
+### Changed
+- **Removed `gt stop`** - Use `gt down --polecats` instead (cleaner semantics)
+- **Policy-neutral templates** - crew.md.tmpl checks remote origin for PR policy
+- **Refactored prime.go** - Split 1833-line file into logical modules
+
+### Fixed
+- **Polecat re-spawn** - CreateOrReopenAgentBead handles polecat lifecycle correctly (#333)
+- **Vim mode compatibility** - tmux sends Escape before Enter for vim users
+- **Worktree default branch** - Uses rig's configured default branch (#325)
+- **Agent bead type** - Sets --type=agent when creating agent beads
+- **Bootstrap priming** - Reduced AGENTS.md to bootstrap pointer, fixed CLAUDE.md templates
+
+### Documentation
+- Updated witness help text for self-cleaning model
+- Updated daemon comments for self-cleaning model
+- Policy-aware PR guidance in crew template
+
+## [0.2.4] - 2026-01-10
+
+Priming subsystem overhaul and Zero Framework Cognition (ZFC) improvements.
+
+### Added
+
+#### Priming Subsystem
+- **PRIME.md provisioning** - Auto-provision PRIME.md at rig level so all workers inherit Gas Town context (GUPP, hooks, propulsion) (#hq-5z76w)
+- **Post-handoff detection** - `gt prime` detects handoff marker and outputs "HANDOFF COMPLETE" warning to prevent handoff loop bug (#hq-ukjrr)
+- **Priming health checks** - `gt doctor` validates priming subsystem: SessionStart hook, gt prime command, PRIME.md presence, CLAUDE.md size (#hq-5scnt)
+- **`gt prime --dry-run`** - Preview priming without side effects
+- **`gt prime --state`** - Output session state (normal, post-handoff, crash-recovery, autonomous)
+- **`gt prime --explain`** - Add [EXPLAIN] tags for debugging priming decisions
+
+#### Formula & Configuration
+- **Rig-level default formulas** - Configure default formula at rig level (#297)
+- **Witness --agent/--env overrides** - Override agent and environment variables for witness (#293, #294)
+
+#### Developer Experience
+- **UX system import** - Comprehensive UX system from beads (#311)
+- **Explicit handoff instructions** - Clearer nudge message for handoff recipients
+
+### Fixed
+
+#### Zero Framework Cognition (ZFC)
+- **Query tmux directly** - Remove marker TTL, query tmux for agent state
+- **Remove PID-based detection** - Agent liveness from tmux, not PIDs
+- **Agent-controlled thresholds** - Stuck detection moved to agent config
+- **Remove pending.json tracking** - Eliminated anti-pattern
+- **Derive state from files** - ZFC state from filesystem, not memory cache
+- **Remove Go-side computation** - No stderr parsing violations
+
+#### Hooks & Beads
+- **Cross-level hook visibility** - Hooked beads visible to mayor/deacon (#aeb4c0d)
+- **Warn on closed hooked bead** - Alert when hooked bead already closed (#2f50a59)
+- **Correct agent bead ID format** - Fix bd create flags for agent beads (#c4fcdd8)
+
+#### Formula
+- **rigPath fallback** - Set rigPath when falling back to gastown default (#afb944f)
+
+#### Doctor
+- **Full AgentEnv for env-vars check** - Use complete environment for validation (#ce231a3)
+
+### Changed
+
+- **Refactored beads/mail modules** - Split large files into focused modules for maintainability
+
+## [0.2.3] - 2026-01-09
+
+Worker safety release - prevents accidental termination of active agents.
+
+> **Note**: The Deacon safety improvements are believed to be correct but have not
+> yet been extensively tested in production. We recommend running with
+> `gt deacon pause` initially and monitoring behavior before enabling full patrol.
+> Please report any issues. A 0.3.0 release will follow once these changes are
+> battle-tested.
+
+### Critical Safety Improvements
+
+- **Kill authority removed from Deacon** - Deacon patrol now only detects zombies via `--dry-run`, never kills directly. Death warrants are filed for Boot to handle interrogation/execution. This prevents destruction of worker context, mid-task progress, and unsaved state (#gt-vhaej)
+- **Bulletproof pause mechanism** - Multi-layer pause for Deacon with file-based state, `gt deacon pause/resume` commands, and guards in `gt prime` and heartbeat (#265)
+- **Doctor warns instead of killing** - `gt doctor` now warns about stale town-root settings rather than killing sessions (#243)
+- **Orphan process check informational** - Doctor's orphan process detection is now informational only, not actionable (#272)
+
+### Added
+
+- **`gt account switch` command** - Switch between Claude Code accounts with `gt account switch <handle>`. Manages `~/.claude` symlinks and updates default account
+- **`gt crew list --all`** - Show all crew members across all rigs (#276)
+- **Rig-level custom agent support** - Configure different agents per-rig (#12)
+- **Rig identity beads check** - Doctor validates rig identity beads exist
+- **GT_ROOT env var** - Set for all agent sessions for consistent environment
+- **New agent presets** - Added Cursor, Auggie (Augment Code), and Sourcegraph AMP as built-in agent presets (#247)
+- **Context Management docs** - Added to Witness template for better context handling (gt-jjama)
+
+### Fixed
+
+- **`gt prime --hook` recognized** - Doctor now recognizes `gt prime --hook` as valid session hook config (#14)
+- **Integration test reliability** - Improved test stability (#13)
+- **IsClaudeRunning detection** - Now detects 'claude' and version patterns correctly (#273)
+- **Deacon heartbeat restored** - `ensureDeaconRunning` restored to heartbeat using Manager pattern (#271)
+- **Deacon session names** - Correct session name references in formulas (#270)
+- **Hidden directory scanning** - Ignore `.claude` and other dot directories when enumerating polecats (#258, #279)
+- **SetupRedirect tracked beads** - Works correctly with tracked beads architecture where canonical location is `mayor/rig/.beads`
+- **Tmux shell ready** - Wait for shell ready before sending keys (#264)
+- **Gastown prefix derivation** - Correctly derive `gt-` prefix for gastown compound words (gt-m46bb)
+- **Custom beads types** - Register custom beads types during install (#250)
+
+### Changed
+
+- **Refinery Manager pattern** - Replaced `ensureRefinerySession` with `refinery.Manager.Start()` for consistency
+
+### Removed
+
+- **Unused formula JSON** - Removed unused JSON formula file (cleanup)
+
+### Contributors
+
+Thanks to all contributors for this release:
+- @julianknutsen - Doctor fixes (#14, #271, #272, #273), formula fixes (#270), GT_ROOT env (#268)
+- @joshuavial - Hidden directory scanning (#258, #279), crew list --all (#276)
+
+## [0.2.2] - 2026-01-07
+
+Rig operational state management, unified agent startup, and extensive stability fixes.
+
+### Added
+
+#### Rig Operational State Management
+- **`gt rig park/unpark` commands** - Level 1 rig control: pause daemon auto-start while preserving sessions
+- **`gt rig dock/undock` commands** - Level 2 rig control: stop all sessions and prevent auto-start (gt-9gm9n)
+- **`gt rig config` commands** - Per-rig configuration management (gt-hhmkq)
+- **Rig identity beads** - Schema and creation for rig identity tracking (gt-zmznh)
+- **Property layer lookup** - Hierarchical configuration resolution (gt-emh1c)
+- **Operational state in status** - `gt rig status` shows park/dock state
+
+#### Agent Configuration & Startup
+- **`--agent` overrides** - Override agent for start/attach/sling commands
+- **Unified agent startup** - Manager pattern for consistent agent initialization
+- **Claude settings installation** - Auto-install during rig and HQ creation
+- **Runtime-aware tmux checks** - Detect actual agent state from tmux sessions
+
+#### Status & Monitoring
+- **`gt status --watch`** - Watch mode with auto-refresh (#231)
+- **Compact status output** - One-line-per-worker format as new default
+- **LED status indicators** - Visual indicators for rigs in Mayor tmux status line
+- **Parked/docked indicators** - Pause emoji (⏸) for inactive rigs in statusline
+
+#### Beads & Workflow
+- **Minimum beads version check** - Validates beads CLI compatibility (gt-im3fl)
+- **ZFC convoy auto-close** - `bd close` triggers convoy completion (gt-3qw5s)
+- **Stale hooked bead cleanup** - Deacon clears orphaned hooks (gt-2yls3)
+- **Doctor prefix mismatch detection** - Detect misconfigured rig prefixes (gt-17wdl)
+- **Unified beads redirect** - Single redirect system for tracked and local beads (#222)
+- **Route from rig to town beads** - Cross-level bead routing
+
+#### Infrastructure
+- **Windows-compatible file locking** - Daemon lock works on Windows
+- **`--purge` flag for crews** - Full crew obliteration option
+- **Debug logging for suppressed errors** - Better visibility into startup issues (gt-6d7eh)
+- **hq- prefix in tmux cycle bindings** - Navigate to Mayor/Deacon sessions
+- **Wisp config storage layer** - Transient/local settings for ephemeral workflows
+- **Sparse checkout** - Exclude Claude context files from source repos
+
+### Changed
+
+- **Daemon respects rig operational state** - Parked/docked rigs not auto-started
+- **Agent startup unified** - Manager pattern replaces ad-hoc initialization
+- **Mayor files moved** - Reorganized into `mayor/` subdirectory
+- **Refinery merges local branches** - No longer fetches from origin (gt-cio03)
+- **Polecats start from origin/default-branch** - Consistent recycled state
+- **Observable states removed** - Discover agent state from tmux, don't track (gt-zecmc)
+- **mol-town-shutdown v3** - Complete cleanup formula (gt-ux23f)
+- **Witness delays polecat cleanup** - Wait until MR merges (gt-12hwb)
+- **Nudge on divergence** - Daemon nudges agents instead of silent accept
+- **README rewritten** - Comprehensive guides and architecture docs (#226)
+- **`gt rigs` → `gt rig list`** - Command renamed in templates/docs (#217)
+
+### Fixed
+
+#### Doctor & Lifecycle
+- **`--restart-sessions` flag required** - Doctor won't cycle sessions without explicit flag (gt-j44ri)
+- **Only cycle patrol roles** - Doctor --fix doesn't restart crew/polecats (hq-qthgye)
+- **Session-ended events auto-closed** - Prevent accumulation (gt-8tc1v)
+- **GUPP propulsion nudge** - Added to daemon restartSession
+
+#### Sling & Beads
+- **Sling uses bd native routing** - No BEADS_DIR override needed
+- **Sling parses wisp JSON correctly** - Handle `new_epic_id` field
+- **Sling resolves rig path** - Cross-rig bead hooking works
+- **Sling waits for Claude ready** - Don't nudge until session responsive (#146)
+- **Correct beads database for sling** - Rig-level beads used (gt-n5gga)
+- **Close hooked beads before clearing** - Proper cleanup order (gt-vwjz6)
+- **Removed dead sling flags** - `--molecule` and `--quality` cleaned up
+
+#### Agent Sessions
+- **Witness kills tmux on Stop()** - Clean session termination
+- **Deacon uses session package** - Correct hq- session names (gt-r38pj)
+- **Honor rig agent for witness/refinery** - Respect per-rig settings
+- **Canonical hq role bead IDs** - Consistent naming
+- **hq- prefix in status display** - Global agents shown correctly (gt-vcvyd)
+- **Restart Claude when dead** - Recover sessions where tmux exists but Claude died
+- **Town session cycling** - Works from any directory
+
+#### Polecat & Crew
+- **Nuke not blocked by stale hooks** - Closed beads don't prevent cleanup (gt-jc7bq)
+- **Crew stop dry-run support** - Preview cleanup before executing (gt-kjcx4)
+- **Crew defaults to --all** - `gt crew start <rig>` starts all crew (gt-s8mpt)
+- **Polecat cleanup handlers** - `gt witness process` invokes handlers (gt-h3gzj)
+
+#### Daemon & Configuration
+- **Create mayor/daemon.json** - `gt start` and `gt doctor --fix` initialize daemon state (#225)
+- **Initialize git before beads** - Enable repo fingerprint (#180)
+- **Handoff preserves env vars** - Claude Code environment not lost (#216)
+- **Agent settings passed correctly** - Witness and daemon respawn use rigPath
+- **Log rig discovery errors** - Don't silently swallow (gt-rsnj9)
+
+#### Refinery & Merge Queue
+- **Use rig's default_branch** - Not hardcoded 'main'
+- **MERGE_FAILED sent to Witness** - Proper failure notification
+- **Removed BranchPushedToRemote checks** - Local-only workflow support (gt-dymy5)
+
+#### Misc Fixes
+- **BeadsSetupRedirect preserves tracked files** - Don't clobber existing files (gt-fj0ol)
+- **PATH export in hooks** - Ensure commands find binaries
+- **Replace panic with fallback** - ID generation gracefully degrades (#213)
+- **Removed duplicate WorktreeAddFromRef** - Code cleanup
+- **Town root beads for Deacon** - Use correct beads location (gt-sstg)
+
+### Refactored
+
+- **AgentStateManager pattern** - Shared state management extracted (gt-gaw8e)
+- **CleanupStatus type** - Replace raw strings (gt-77gq7)
+- **ExecWithOutput utility** - Common command execution (gt-vurfr)
+- **runBdCommand helper** - DRY mail package (gt-8i6bg)
+- **Config expansion helper** - Generic DRY config (gt-i85sg)
+
+### Documentation
+
+- **Property layers guide** - Implementation documentation
+- **Worktree architecture** - Clarified beads routing
+- **Agent config** - Onboarding docs mention --agent overrides
+- **Polecat Operations section** - Added to Mayor docs (#140)
+
+### Contributors
+
+Thanks to all contributors for this release:
+- @julianknutsen - Claude settings inheritance (#239)
+- @joshuavial - Sling wisp JSON parse (#238)
+- @michaellady - Unified beads redirect (#222), daemon.json fix (#225)
+- @greghughespdx - PATH in hooks fix (#139)
+
 ## [0.2.1] - 2026-01-05
 
 Bug fixes, security hardening, and new `gt config` command.

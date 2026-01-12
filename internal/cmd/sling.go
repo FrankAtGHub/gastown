@@ -23,6 +23,39 @@ import (
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
+type wispCreateJSON struct {
+	NewEpicID string `json:"new_epic_id"`
+	RootID    string `json:"root_id"`
+	ResultID  string `json:"result_id"`
+}
+
+func parseWispIDFromJSON(jsonOutput []byte) (string, error) {
+	var result wispCreateJSON
+	if err := json.Unmarshal(jsonOutput, &result); err != nil {
+		return "", fmt.Errorf("parsing wisp JSON: %w (output: %s)", err, trimJSONForError(jsonOutput))
+	}
+
+	switch {
+	case result.NewEpicID != "":
+		return result.NewEpicID, nil
+	case result.RootID != "":
+		return result.RootID, nil
+	case result.ResultID != "":
+		return result.ResultID, nil
+	default:
+		return "", fmt.Errorf("wisp JSON missing id field (expected one of new_epic_id, root_id, result_id); output: %s", trimJSONForError(jsonOutput))
+	}
+}
+
+func trimJSONForError(jsonOutput []byte) string {
+	s := strings.TrimSpace(string(jsonOutput))
+	const maxLen = 500
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
 var slingCmd = &cobra.Command{
 	Use:     "sling <bead-or-formula> [target]",
 	GroupID: GroupWork,
@@ -34,7 +67,6 @@ This is THE command for assigning work in Gas Town. It handles:
   - Auto-spawning polecats when target is a rig
   - Dispatching to dogs (Deacon's helper workers)
   - Formula instantiation and wisp creation
-  - No-tmux mode for manual agent operation
   - Auto-convoy creation for dashboard visibility
 
 Auto-Convoy:
@@ -56,7 +88,6 @@ Target Resolution:
 
 Spawning Options (when target is a rig):
   gt sling gp-abc greenplace --create               # Create polecat if missing
-  gt sling gp-abc greenplace --naked                # No-tmux (manual start)
   gt sling gp-abc greenplace --force                # Ignore unread mail
   gt sling gp-abc greenplace --account work         # Use specific Claude account
 
@@ -99,8 +130,7 @@ var (
 	slingVars     []string // --var flag: formula variables (key=value)
 	slingArgs     string   // --args flag: natural language instructions for executor
 
-	// Flags migrated for polecat spawning (used by sling for work assignment
-	slingNaked    bool   // --naked: no-tmux mode (skip session creation)
+	// Flags migrated for polecat spawning (used by sling for work assignment)
 	slingCreate   bool   // --create: create polecat if it doesn't exist
 	slingForce    bool   // --force: force spawn even if polecat has unread mail
 	slingAccount  string // --account: Claude Code account handle to use
@@ -117,7 +147,6 @@ func init() {
 	slingCmd.Flags().StringVarP(&slingArgs, "args", "a", "", "Natural language instructions for the executor (e.g., 'patch release')")
 
 	// Flags for polecat spawning (when target is a rig)
-	slingCmd.Flags().BoolVar(&slingNaked, "naked", false, "No-tmux mode: assign work but skip session creation (manual start)")
 	slingCmd.Flags().BoolVar(&slingCreate, "create", false, "Create polecat if it doesn't exist")
 	slingCmd.Flags().BoolVar(&slingForce, "force", false, "Force spawn even if polecat has unread mail")
 	slingCmd.Flags().StringVar(&slingAccount, "account", "", "Claude Code account handle to use")
@@ -177,16 +206,23 @@ func runSling(cmd *cobra.Command, args []string) error {
 
 		// Try as bead first
 		if err := verifyBeadExists(firstArg); err == nil {
-			// It's a bead
+			// It's a verified bead
 			beadID = firstArg
 		} else {
-			// Not a bead - try as standalone formula
+			// Not a verified bead - try as standalone formula
 			if err := verifyFormulaExists(firstArg); err == nil {
 				// Standalone formula mode: gt sling <formula> [target]
 				return runSlingFormula(args)
 			}
-			// Neither bead nor formula
-			return fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
+			// Not a formula either - check if it looks like a bead ID (routing issue workaround).
+			// Accept it and let the actual bd update fail later if the bead doesn't exist.
+			// This fixes: gt sling bd-ka761 beads/crew/dave failing with 'not a valid bead or formula'
+			if looksLikeBeadID(firstArg) {
+				beadID = firstArg
+			} else {
+				// Neither bead nor formula
+				return fmt.Errorf("'%s' is not a valid bead or formula", firstArg)
+			}
 		}
 	}
 
@@ -231,9 +267,6 @@ func runSling(cmd *cobra.Command, args []string) error {
 			if slingDryRun {
 				// Dry run - just indicate what would happen
 				fmt.Printf("Would spawn fresh polecat in rig '%s'\n", rigName)
-				if slingNaked {
-					fmt.Printf("  --naked: would skip tmux session\n")
-				}
 				targetAgent = fmt.Sprintf("%s/polecats/<new>", rigName)
 				targetPane = "<new-pane>"
 			} else {
@@ -241,7 +274,6 @@ func runSling(cmd *cobra.Command, args []string) error {
 				fmt.Printf("Target is rig '%s', spawning fresh polecat...\n", rigName)
 				spawnOpts := SlingSpawnOptions{
 					Force:    slingForce,
-					Naked:    slingNaked,
 					Account:  slingAccount,
 					Create:   slingCreate,
 					HookBead: beadID, // Set atomically at spawn time
@@ -260,9 +292,8 @@ func runSling(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			// Slinging to an existing agent
-			// Skip pane lookup if --naked (agent may be terminated)
 			var targetWorkDir string
-			targetAgent, targetPane, targetWorkDir, err = resolveTargetAgent(target, slingNaked)
+			targetAgent, targetPane, targetWorkDir, err = resolveTargetAgent(target)
 			if err != nil {
 				return fmt.Errorf("resolving target: %w", err)
 			}
@@ -354,8 +385,14 @@ func runSling(cmd *cobra.Command, args []string) error {
 	if formulaName != "" {
 		fmt.Printf("  Instantiating formula %s...\n", formulaName)
 
+		// Route bd mutations (cook/wisp/bond) to the correct beads context for the target bead.
+		// Some bd mol commands don't support prefix routing, so we must run them from the
+		// rig directory that owns the bead's database.
+		formulaWorkDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
+
 		// Step 1: Cook the formula (ensures proto exists)
 		cookCmd := exec.Command("bd", "--no-daemon", "cook", formulaName)
+		cookCmd.Dir = formulaWorkDir
 		cookCmd.Stderr = os.Stderr
 		if err := cookCmd.Run(); err != nil {
 			return fmt.Errorf("cooking formula %s: %w", formulaName, err)
@@ -365,6 +402,7 @@ func runSling(cmd *cobra.Command, args []string) error {
 		featureVar := fmt.Sprintf("feature=%s", info.Title)
 		wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName, "--var", featureVar, "--json"}
 		wispCmd := exec.Command("bd", wispArgs...)
+		wispCmd.Dir = formulaWorkDir
 		wispCmd.Stderr = os.Stderr
 		wispOut, err := wispCmd.Output()
 		if err != nil {
@@ -372,19 +410,17 @@ func runSling(cmd *cobra.Command, args []string) error {
 		}
 
 		// Parse wisp output to get the root ID
-		var wispResult struct {
-			RootID string `json:"root_id"`
-		}
-		if err := json.Unmarshal(wispOut, &wispResult); err != nil {
+		wispRootID, err := parseWispIDFromJSON(wispOut)
+		if err != nil {
 			return fmt.Errorf("parsing wisp output: %w", err)
 		}
-		wispRootID := wispResult.RootID
 		fmt.Printf("%s Formula wisp created: %s\n", style.Bold.Render("✓"), wispRootID)
 
 		// Step 3: Bond wisp to original bead (creates compound)
 		// Use --no-daemon for mol bond (requires direct database access)
 		bondArgs := []string{"--no-daemon", "mol", "bond", wispRootID, beadID, "--json"}
 		bondCmd := exec.Command("bd", bondArgs...)
+		bondCmd.Dir = formulaWorkDir
 		bondCmd.Stderr = os.Stderr
 		bondOut, err := bondCmd.Output()
 		if err != nil {
@@ -473,10 +509,14 @@ func runSling(cmd *cobra.Command, args []string) error {
 // This enables no-tmux mode where agents discover args via gt prime / bd show.
 func storeArgsInBead(beadID, args string) error {
 	// Get the bead to preserve existing description content
-	showCmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	showCmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json", "--allow-stale")
 	out, err := showCmd.Output()
 	if err != nil {
 		return fmt.Errorf("fetching bead: %w", err)
+	}
+	// Handle bd --no-daemon exit 0 bug: empty stdout means not found
+	if len(out) == 0 {
+		return fmt.Errorf("bead not found")
 	}
 
 	// Parse the bead
@@ -636,8 +676,7 @@ func ensureAgentReady(sessionName string) error {
 }
 
 // resolveTargetAgent converts a target spec to agent ID, pane, and hook root.
-// If skipPane is true, skip tmux pane lookup (for --naked mode).
-func resolveTargetAgent(target string, skipPane bool) (agentID string, pane string, hookRoot string, err error) {
+func resolveTargetAgent(target string) (agentID string, pane string, hookRoot string, err error) {
 	// First resolve to session name
 	sessionName, err := resolveRoleToSession(target)
 	if err != nil {
@@ -646,11 +685,6 @@ func resolveTargetAgent(target string, skipPane bool) (agentID string, pane stri
 
 	// Convert session name to agent ID format (this doesn't require tmux)
 	agentID = sessionToAgentID(sessionName)
-
-	// Skip pane lookup if requested (--naked mode)
-	if skipPane {
-		return agentID, "", "", nil
-	}
 
 	// Get the pane for that session
 	pane, err = getSessionPane(sessionName)
@@ -682,15 +716,25 @@ func sessionToAgentID(sessionName string) string {
 // verifyBeadExists checks that the bead exists using bd show.
 // Uses bd's native prefix-based routing via routes.jsonl - do NOT set BEADS_DIR
 // as that overrides routing and breaks resolution of rig-level beads.
+//
+// Uses --no-daemon with --allow-stale to avoid daemon socket timing issues
+// while still finding beads when database is out of sync with JSONL.
+// For existence checks, stale data is acceptable - we just need to know it exists.
 func verifyBeadExists(beadID string) error {
-	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json", "--allow-stale")
 	// Run from town root so bd can find routes.jsonl for prefix-based routing.
 	// Do NOT set BEADS_DIR - that overrides routing and breaks rig bead resolution.
 	if townRoot, err := workspace.FindFromCwd(); err == nil {
 		cmd.Dir = townRoot
 	}
-	if err := cmd.Run(); err != nil {
+	// Use Output() instead of Run() to detect bd --no-daemon exit 0 bug:
+	// when issue not found, --no-daemon exits 0 but produces empty stdout.
+	out, err := cmd.Output()
+	if err != nil {
 		return fmt.Errorf("bead '%s' not found (bd show failed)", beadID)
+	}
+	if len(out) == 0 {
+		return fmt.Errorf("bead '%s' not found", beadID)
 	}
 	return nil
 }
@@ -704,14 +748,20 @@ type beadInfo struct {
 
 // getBeadInfo returns status and assignee for a bead.
 // Uses bd's native prefix-based routing via routes.jsonl.
+// Uses --no-daemon with --allow-stale for consistency with verifyBeadExists.
 func getBeadInfo(beadID string) (*beadInfo, error) {
-	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json")
+	cmd := exec.Command("bd", "--no-daemon", "show", beadID, "--json", "--allow-stale")
 	// Run from town root so bd can find routes.jsonl for prefix-based routing.
 	if townRoot, err := workspace.FindFromCwd(); err == nil {
 		cmd.Dir = townRoot
 	}
 	out, err := cmd.Output()
 	if err != nil {
+		return nil, fmt.Errorf("bead '%s' not found", beadID)
+	}
+	// Handle bd --no-daemon exit 0 bug: when issue not found,
+	// --no-daemon exits 0 but produces empty stdout (error goes to stderr).
+	if len(out) == 0 {
 		return nil, fmt.Errorf("bead '%s' not found", beadID)
 	}
 	// bd show --json returns an array (issue + dependents), take first element
@@ -776,16 +826,19 @@ func resolveSelfTarget() (agentID string, pane string, hookRoot string, err erro
 
 // verifyFormulaExists checks that the formula exists using bd formula show.
 // Formulas are TOML files (.formula.toml).
+// Uses --no-daemon with --allow-stale for consistency with verifyBeadExists.
 func verifyFormulaExists(formulaName string) error {
 	// Try bd formula show (handles all formula file formats)
-	cmd := exec.Command("bd", "--no-daemon", "formula", "show", formulaName)
-	if err := cmd.Run(); err == nil {
+	// Use Output() instead of Run() to detect bd --no-daemon exit 0 bug:
+	// when formula not found, --no-daemon may exit 0 but produce empty stdout.
+	cmd := exec.Command("bd", "--no-daemon", "formula", "show", formulaName, "--allow-stale")
+	if out, err := cmd.Output(); err == nil && len(out) > 0 {
 		return nil
 	}
 
 	// Try with mol- prefix
-	cmd = exec.Command("bd", "--no-daemon", "formula", "show", "mol-"+formulaName)
-	if err := cmd.Run(); err == nil {
+	cmd = exec.Command("bd", "--no-daemon", "formula", "show", "mol-"+formulaName, "--allow-stale")
+	if out, err := cmd.Output(); err == nil && len(out) > 0 {
 		return nil
 	}
 
@@ -848,9 +901,6 @@ func runSlingFormula(args []string) error {
 			if slingDryRun {
 				// Dry run - just indicate what would happen
 				fmt.Printf("Would spawn fresh polecat in rig '%s'\n", rigName)
-				if slingNaked {
-					fmt.Printf("  --naked: would skip tmux session\n")
-				}
 				targetAgent = fmt.Sprintf("%s/polecats/<new>", rigName)
 				targetPane = "<new-pane>"
 			} else {
@@ -858,7 +908,6 @@ func runSlingFormula(args []string) error {
 				fmt.Printf("Target is rig '%s', spawning fresh polecat...\n", rigName)
 				spawnOpts := SlingSpawnOptions{
 					Force:   slingForce,
-					Naked:   slingNaked,
 					Account: slingAccount,
 					Create:  slingCreate,
 					Agent:   slingAgent,
@@ -875,9 +924,8 @@ func runSlingFormula(args []string) error {
 			}
 		} else {
 			// Slinging to an existing agent
-			// Skip pane lookup if --naked (agent may be terminated)
 			var targetWorkDir string
-			targetAgent, targetPane, targetWorkDir, err = resolveTargetAgent(target, slingNaked)
+			targetAgent, targetPane, targetWorkDir, err = resolveTargetAgent(target)
 			if err != nil {
 				return fmt.Errorf("resolving target: %w", err)
 			}
@@ -931,21 +979,17 @@ func runSlingFormula(args []string) error {
 	}
 
 	// Parse wisp output to get the root ID
-	var wispResult struct {
-		RootID string `json:"root_id"`
-	}
-	if err := json.Unmarshal(wispOut, &wispResult); err != nil {
-		// Fallback: use formula name as identifier, but warn user
-		fmt.Printf("%s Could not parse wisp output, using formula name as ID\n", style.Dim.Render("Warning:"))
-		wispResult.RootID = formulaName
+	wispRootID, err := parseWispIDFromJSON(wispOut)
+	if err != nil {
+		return fmt.Errorf("parsing wisp output: %w", err)
 	}
 
-	fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispResult.RootID)
+	fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispRootID)
 
 	// Step 3: Hook the wisp bead using bd update.
 	// See: https://github.com/steveyegge/gastown/issues/148
-	hookCmd := exec.Command("bd", "--no-daemon", "update", wispResult.RootID, "--status=hooked", "--assignee="+targetAgent)
-	hookCmd.Dir = beads.ResolveHookDir(townRoot, wispResult.RootID, "")
+	hookCmd := exec.Command("bd", "--no-daemon", "update", wispRootID, "--status=hooked", "--assignee="+targetAgent)
+	hookCmd.Dir = beads.ResolveHookDir(townRoot, wispRootID, "")
 	hookCmd.Stderr = os.Stderr
 	if err := hookCmd.Run(); err != nil {
 		return fmt.Errorf("hooking wisp bead: %w", err)
@@ -954,23 +998,23 @@ func runSlingFormula(args []string) error {
 
 	// Log sling event to activity feed (formula slinging)
 	actor := detectActor()
-	payload := events.SlingPayload(wispResult.RootID, targetAgent)
+	payload := events.SlingPayload(wispRootID, targetAgent)
 	payload["formula"] = formulaName
 	_ = events.LogFeed(events.TypeSling, actor, payload)
 
 	// Update agent bead's hook_bead field (ZFC: agents track their current work)
 	// Note: formula slinging uses town root as workDir (no polecat-specific path)
-	updateAgentHookBead(targetAgent, wispResult.RootID, "", townBeadsDir)
+	updateAgentHookBead(targetAgent, wispRootID, "", townBeadsDir)
 
 	// Store dispatcher in bead description (enables completion notification to dispatcher)
-	if err := storeDispatcherInBead(wispResult.RootID, actor); err != nil {
+	if err := storeDispatcherInBead(wispRootID, actor); err != nil {
 		// Warn but don't fail - polecat will still complete work
 		fmt.Printf("%s Could not store dispatcher in bead: %v\n", style.Dim.Render("Warning:"), err)
 	}
 
 	// Store args in wisp bead if provided (no-tmux mode: beads as data plane)
 	if slingArgs != "" {
-		if err := storeArgsInBead(wispResult.RootID, slingArgs); err != nil {
+		if err := storeArgsInBead(wispRootID, slingArgs); err != nil {
 			fmt.Printf("%s Could not store args in bead: %v\n", style.Dim.Render("Warning:"), err)
 		} else {
 			fmt.Printf("%s Args stored in bead (durable)\n", style.Bold.Render("✓"))
@@ -1365,9 +1409,6 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 		for _, beadID := range beadIDs {
 			fmt.Printf("  Would spawn polecat for: %s\n", beadID)
 		}
-		if slingNaked {
-			fmt.Printf("  --naked: would skip tmux sessions\n")
-		}
 		return nil
 	}
 
@@ -1403,7 +1444,6 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 		// Spawn a fresh polecat
 		spawnOpts := SlingSpawnOptions{
 			Force:    slingForce,
-			Naked:    slingNaked,
 			Account:  slingAccount,
 			Create:   slingCreate,
 			HookBead: beadID, // Set atomically at spawn time

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/runtime"
 )
 
 // timeNow is a function that returns the current time. It can be overridden in tests.
@@ -334,7 +335,7 @@ func (m *Mailbox) markReadBeads(id string) error {
 func (m *Mailbox) closeInDir(id, beadsDir string) error {
 	args := []string{"close", id}
 	// Pass session ID for work attribution if available
-	if sessionID := os.Getenv("CLAUDE_SESSION_ID"); sessionID != "" {
+	if sessionID := runtime.SessionIDFromEnv(); sessionID != "" {
 		args = append(args, "--session="+sessionID)
 	}
 
@@ -368,6 +369,61 @@ func (m *Mailbox) markReadLegacy(id string) error {
 	}
 
 	return m.rewriteLegacy(messages)
+}
+
+// MarkReadOnly marks a message as read WITHOUT archiving/closing it.
+// For beads mode, this adds a "read" label to the message.
+// For legacy mode, this sets the Read field to true.
+// The message remains in the inbox but is displayed as read.
+func (m *Mailbox) MarkReadOnly(id string) error {
+	if m.legacy {
+		return m.markReadLegacy(id)
+	}
+	return m.markReadOnlyBeads(id)
+}
+
+func (m *Mailbox) markReadOnlyBeads(id string) error {
+	// Add "read" label to mark as read without closing
+	args := []string{"label", "add", id, "read"}
+
+	_, err := runBdCommand(args, m.workDir, m.beadsDir)
+	if err != nil {
+		if bdErr, ok := err.(*bdError); ok && bdErr.ContainsError("not found") {
+			return ErrMessageNotFound
+		}
+		return err
+	}
+
+	return nil
+}
+
+// MarkUnreadOnly marks a message as unread (removes "read" label).
+// For beads mode, this removes the "read" label from the message.
+// For legacy mode, this sets the Read field to false.
+func (m *Mailbox) MarkUnreadOnly(id string) error {
+	if m.legacy {
+		return m.markUnreadLegacy(id)
+	}
+	return m.markUnreadOnlyBeads(id)
+}
+
+func (m *Mailbox) markUnreadOnlyBeads(id string) error {
+	// Remove "read" label to mark as unread
+	args := []string{"label", "remove", id, "read"}
+
+	_, err := runBdCommand(args, m.workDir, m.beadsDir)
+	if err != nil {
+		if bdErr, ok := err.(*bdError); ok && bdErr.ContainsError("not found") {
+			return ErrMessageNotFound
+		}
+		// Ignore error if label doesn't exist
+		if bdErr, ok := err.(*bdError); ok && bdErr.ContainsError("does not have label") {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }
 
 // MarkUnread marks a message as unread (reopens in beads).
@@ -685,15 +741,11 @@ func (m *Mailbox) Count() (total, unread int, err error) {
 	}
 
 	total = len(messages)
-	if m.legacy {
-		for _, msg := range messages {
-			if !msg.Read {
-				unread++
-			}
+	// Count messages that are NOT marked as read (including via "read" label)
+	for _, msg := range messages {
+		if !msg.Read {
+			unread++
 		}
-	} else {
-		// For beads, inbox only returns unread
-		unread = total
 	}
 
 	return total, unread, nil
