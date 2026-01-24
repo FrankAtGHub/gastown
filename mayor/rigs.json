@@ -8,14 +8,6 @@
         "repo": "local",
         "prefix": "co"
       }
-    },
-    "mspp": {
-      "git_url": "https://github.com/FrankAtGHub/mspp.git",
-      "added_at": "2026-01-06T00:00:00Z",
-      "beads": {
-        "repo": "local",
-        "prefix": "ms"
-      }
     }
   }
 }
