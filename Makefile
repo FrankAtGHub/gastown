@@ -2,6 +2,7 @@
 
 BINARY := gt
 BUILD_DIR := .
+INSTALL_DIR := $(HOME)/.local/bin
 
 # Get version info for ldflags
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -10,7 +11,8 @@ BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS := -X github.com/steveyegge/gastown/internal/cmd.Version=$(VERSION) \
            -X github.com/steveyegge/gastown/internal/cmd.Commit=$(COMMIT) \
-           -X github.com/steveyegge/gastown/internal/cmd.BuildTime=$(BUILD_TIME)
+           -X github.com/steveyegge/gastown/internal/cmd.BuildTime=$(BUILD_TIME) \
+           -X github.com/steveyegge/gastown/internal/cmd.BuiltProperly=1
 
 generate:
 	go generate ./...
@@ -22,8 +24,11 @@ ifeq ($(shell uname),Darwin)
 	@echo "Signed $(BINARY) for macOS"
 endif
 
-install: generate
-	go install -ldflags "$(LDFLAGS)" ./cmd/gt
+install: build
+	@mkdir -p $(INSTALL_DIR)
+	@rm -f $(INSTALL_DIR)/$(BINARY)
+	@cp $(BUILD_DIR)/$(BINARY) $(INSTALL_DIR)/$(BINARY)
+	@echo "Installed $(BINARY) to $(INSTALL_DIR)/$(BINARY)"
 
 clean:
 	rm -f $(BUILD_DIR)/$(BINARY)
