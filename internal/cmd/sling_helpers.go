@@ -235,6 +235,53 @@ func storeAttachedMoleculeInBead(beadID, moleculeID string) error {
 	return nil
 }
 
+// storeNoMergeInBead sets the no_merge field in a bead's description.
+// When set, gt done will skip the merge queue and keep work on the feature branch.
+// This is useful for upstream contributions or when human review is needed before merge.
+func storeNoMergeInBead(beadID string, noMerge bool) error {
+	if !noMerge {
+		return nil
+	}
+
+	// Get the bead to preserve existing description content
+	showCmd := exec.Command("bd", "show", beadID, "--json")
+	out, err := showCmd.Output()
+	if err != nil {
+		return fmt.Errorf("fetching bead: %w", err)
+	}
+
+	// Parse the bead
+	var issues []beads.Issue
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return fmt.Errorf("parsing bead: %w", err)
+	}
+	if len(issues) == 0 {
+		return fmt.Errorf("bead not found")
+	}
+	issue := &issues[0]
+
+	// Get or create attachment fields
+	fields := beads.ParseAttachmentFields(issue)
+	if fields == nil {
+		fields = &beads.AttachmentFields{}
+	}
+
+	// Set the no_merge flag
+	fields.NoMerge = true
+
+	// Update the description
+	newDesc := beads.SetAttachmentFields(issue, fields)
+
+	// Update the bead
+	updateCmd := exec.Command("bd", "update", beadID, "--description="+newDesc)
+	updateCmd.Stderr = os.Stderr
+	if err := updateCmd.Run(); err != nil {
+		return fmt.Errorf("updating bead description: %w", err)
+	}
+
+	return nil
+}
+
 // injectStartPrompt sends a prompt to the target pane to start working.
 // Uses the reliable nudge pattern: literal mode + 500ms debounce + separate Enter.
 func injectStartPrompt(pane, beadID, subject, args string) error {
@@ -305,7 +352,8 @@ func ensureAgentReady(sessionName string) error {
 	}
 
 	// Claude-only: accept bypass permissions warning if present
-	if t.IsClaudeRunning(sessionName) {
+	agentName, _ := t.GetEnvironment(sessionName, "GT_AGENT")
+	if agentName == "" || agentName == "claude" {
 		_ = t.AcceptBypassPermissionsWarning(sessionName)
 
 		// PRAGMATIC APPROACH: fixed delay rather than prompt detection.
@@ -372,6 +420,9 @@ func agentIDToBeadID(agentID, townRoot string) string {
 		return beads.CrewBeadIDWithPrefix(prefix, rig, parts[2])
 	case len(parts) == 3 && parts[1] == "polecats":
 		return beads.PolecatBeadIDWithPrefix(prefix, rig, parts[2])
+	case len(parts) == 3 && parts[0] == "deacon" && parts[1] == "dogs":
+		// Dogs are town-level agents with hq- prefix
+		return beads.DogBeadIDTown(parts[2])
 	default:
 		return ""
 	}
@@ -429,6 +480,10 @@ func updateAgentHookBead(agentID, beadID, workDir, townBeadsDir string) {
 	if err := bd.SetHookBead(agentBeadID, beadID); err != nil {
 		// Log warning instead of silent ignore - helps debug cross-beads issues
 		fmt.Fprintf(os.Stderr, "Warning: couldn't set agent %s hook: %v\n", agentBeadID, err)
+		// Dogs created before canonical IDs need recreation: gt dog rm <name> && gt dog add <name>
+		if strings.Contains(agentBeadID, "-dog-") {
+			fmt.Fprintf(os.Stderr, "  (Old dog? Recreate with: gt dog rm <name> && gt dog add <name>)\n")
+		}
 		return
 	}
 }
@@ -475,9 +530,10 @@ type FormulaOnBeadResult struct {
 //   - hookWorkDir: working directory for bd commands (polecat's worktree)
 //   - townRoot: the town root directory
 //   - skipCook: if true, skip cooking (for batch mode optimization where cook happens once)
+//   - extraVars: additional --var values supplied by the user
 //
 // Returns the wisp root ID which should be hooked.
-func InstantiateFormulaOnBead(formulaName, beadID, title, hookWorkDir, townRoot string, skipCook bool) (*FormulaOnBeadResult, error) {
+func InstantiateFormulaOnBead(formulaName, beadID, title, hookWorkDir, townRoot string, skipCook bool, extraVars []string) (*FormulaOnBeadResult, error) {
 	// Route bd mutations (wisp/bond) to the correct beads context for the target bead.
 	formulaWorkDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
 
@@ -494,7 +550,11 @@ func InstantiateFormulaOnBead(formulaName, beadID, title, hookWorkDir, townRoot 
 	// Step 2: Create wisp with feature and issue variables from bead
 	featureVar := fmt.Sprintf("feature=%s", title)
 	issueVar := fmt.Sprintf("issue=%s", beadID)
-	wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName, "--var", featureVar, "--var", issueVar, "--json"}
+	wispArgs := []string{"--no-daemon", "mol", "wisp", formulaName, "--var", featureVar, "--var", issueVar}
+	for _, variable := range extraVars {
+		wispArgs = append(wispArgs, "--var", variable)
+	}
+	wispArgs = append(wispArgs, "--json")
 	wispCmd := exec.Command("bd", wispArgs...)
 	wispCmd.Dir = formulaWorkDir
 	wispCmd.Env = append(os.Environ(), "GT_ROOT="+townRoot)

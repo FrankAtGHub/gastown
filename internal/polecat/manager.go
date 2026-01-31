@@ -22,10 +22,11 @@ import (
 
 // Common errors
 var (
-	ErrPolecatExists     = errors.New("polecat already exists")
-	ErrPolecatNotFound   = errors.New("polecat not found")
-	ErrHasChanges        = errors.New("polecat has uncommitted changes")
+	ErrPolecatExists      = errors.New("polecat already exists")
+	ErrPolecatNotFound    = errors.New("polecat not found")
+	ErrHasChanges         = errors.New("polecat has uncommitted changes")
 	ErrHasUncommittedWork = errors.New("polecat has uncommitted work")
+	ErrShellInWorktree    = errors.New("shell working directory is inside polecat worktree")
 )
 
 // UncommittedWorkError provides details about uncommitted work.
@@ -89,9 +90,9 @@ func NewManager(r *rig.Rig, g *git.Git, t *tmux.Tmux) *Manager {
 }
 
 // assigneeID returns the beads assignee identifier for a polecat.
-// Format: "rig/polecatName" (e.g., "gastown/Toast")
+// Format: "rig/polecats/polecatName" (e.g., "gastown/polecats/Toast")
 func (m *Manager) assigneeID(name string) string {
-	return fmt.Sprintf("%s/%s", m.rig.Name, name)
+	return fmt.Sprintf("%s/polecats/%s", m.rig.Name, name)
 }
 
 // agentBeadID returns the agent bead ID for a polecat.
@@ -266,8 +267,8 @@ func (m *Manager) buildBranchName(name, issue string) string {
 
 	// {year} and {month}
 	now := time.Now()
-	vars["{year}"] = now.Format("06")   // YY format
-	vars["{month}"] = now.Format("01")  // MM format
+	vars["{year}"] = now.Format("06")  // YY format
+	vars["{month}"] = now.Format("01") // MM format
 
 	// {name}
 	vars["{name}"] = name
@@ -482,16 +483,17 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (*Polecat, error)
 // If force is true, removes even with uncommitted changes (but not stashes/unpushed).
 // Use nuclear=true to bypass ALL safety checks.
 func (m *Manager) Remove(name string, force bool) error {
-	return m.RemoveWithOptions(name, force, false)
+	return m.RemoveWithOptions(name, force, false, false)
 }
 
 // RemoveWithOptions deletes a polecat worktree with explicit control over safety checks.
 // force=true: bypass uncommitted changes check (legacy behavior)
 // nuclear=true: bypass ALL safety checks including stashes and unpushed commits
+// selfNuke=true: bypass cwd-in-worktree check (for polecat deleting its own worktree)
 //
 // ZFC #10: Uses cleanup_status from agent bead if available (polecat self-report),
 // falls back to git check for backward compatibility.
-func (m *Manager) RemoveWithOptions(name string, force, nuclear bool) error {
+func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) error {
 	if !m.exists(name) {
 		return ErrPolecatNotFound
 	}
@@ -526,6 +528,26 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear bool) error {
 				} else {
 					return &UncommittedWorkError{PolecatName: name, Status: status}
 				}
+			}
+		}
+	}
+
+	// Check if user's shell is cd'd into the worktree (prevents broken shell)
+	// This check runs unless selfNuke=true (polecat deleting its own worktree).
+	// When a polecat calls `gt done`, it's inside its worktree by design - the session
+	// will be killed immediately after, so breaking the shell is expected and harmless.
+	// See: https://github.com/steveyegge/gastown/issues/942
+	if !selfNuke {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr == nil {
+			// Normalize paths for comparison
+			cwdAbs, _ := filepath.Abs(cwd)
+			cloneAbs, _ := filepath.Abs(clonePath)
+			polecatAbs, _ := filepath.Abs(polecatDir)
+
+			if strings.HasPrefix(cwdAbs, cloneAbs) || strings.HasPrefix(cwdAbs, polecatAbs) {
+				return fmt.Errorf("%w: your shell is in %s\n\nPlease cd elsewhere first, then retry:\n  cd ~/gt\n  gt polecat nuke %s/%s --force",
+					ErrShellInWorktree, cwd, m.rig.Name, name)
 			}
 		}
 	}
@@ -574,6 +596,13 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear bool) error {
 	// Prune any stale worktree entries (non-fatal: cleanup only)
 	_ = repoGit.WorktreePrune()
 
+	// Verify removal succeeded (fixes #618)
+	// The above removal attempts may fail silently on permissions, symlinks, or busy files
+	if err := verifyRemovalComplete(polecatDir, clonePath); err != nil {
+		// Log warning but don't fail - the polecat is effectively "removed" from Gas Town's perspective
+		fmt.Printf("Warning: incomplete removal for %s: %v\n", name, err)
+	}
+
 	// Release name back to pool if it's a pooled name (non-fatal: state file update)
 	m.namePool.Release(name)
 	_ = m.namePool.Save()
@@ -590,6 +619,61 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear bool) error {
 	}
 
 	return nil
+}
+
+// verifyRemovalComplete checks that polecat directories were actually removed.
+// If they still exist, it attempts more aggressive cleanup and returns an error
+// describing what couldn't be removed.
+func verifyRemovalComplete(polecatDir, clonePath string) error {
+	var remaining []string
+
+	// Check if clone path still exists
+	if _, err := os.Stat(clonePath); err == nil {
+		// Try one more aggressive removal
+		if removeErr := forceRemoveDir(clonePath); removeErr != nil {
+			remaining = append(remaining, clonePath)
+		}
+	}
+
+	// Check if polecat dir still exists (and is different from clone path)
+	if polecatDir != clonePath {
+		if _, err := os.Stat(polecatDir); err == nil {
+			if removeErr := forceRemoveDir(polecatDir); removeErr != nil {
+				remaining = append(remaining, polecatDir)
+			}
+		}
+	}
+
+	if len(remaining) > 0 {
+		return fmt.Errorf("directories still exist after removal: %v", remaining)
+	}
+	return nil
+}
+
+// forceRemoveDir attempts aggressive removal of a directory.
+// It handles permission issues by making files writable before removal.
+func forceRemoveDir(dir string) error {
+	// First try normal removal
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+
+	// Walk the directory and make everything writable, then try again
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Continue on error
+		}
+		// Make writable (0755 for dirs, 0644 for files)
+		if d.IsDir() {
+			_ = os.Chmod(path, 0755)
+		} else {
+			_ = os.Chmod(path, 0644)
+		}
+		return nil
+	})
+
+	// Try removal again after fixing permissions
+	return os.RemoveAll(dir)
 }
 
 // AllocateName allocates a name from the name pool.
@@ -832,6 +916,50 @@ func (m *Manager) ReconcilePoolWith(namesWithDirs, namesWithSessions []string) {
 
 	m.namePool.Reconcile(namesWithDirs)
 	// Note: No Save() needed - InUse is transient state, only OverflowNext is persisted
+
+	// Clean up orphaned polecat state (fixes #698)
+	m.cleanupOrphanPolecatState()
+}
+
+// cleanupOrphanPolecatState removes partial/broken polecat state during allocation.
+// This handles the race condition where worktree creation fails mid-way, leaving:
+// - Empty polecat directories without .git
+// - Directories with invalid/corrupt .git files
+// - Stale git worktree registrations
+func (m *Manager) cleanupOrphanPolecatState() {
+	polecatsDir := filepath.Join(m.rig.Path, "polecats")
+
+	entries, err := os.ReadDir(polecatsDir)
+	if err != nil {
+		return // polecats dir doesn't exist, nothing to clean
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		name := entry.Name()
+		polecatDir := filepath.Join(polecatsDir, name)
+
+		// Check if this is a valid polecat with a working worktree
+		clonePath := filepath.Join(polecatDir, m.rig.Name)
+		gitPath := filepath.Join(clonePath, ".git")
+
+		// Check if clone directory exists
+		if _, err := os.Stat(clonePath); os.IsNotExist(err) {
+			// Empty polecat directory without clone - remove it
+			_ = os.RemoveAll(polecatDir)
+			continue
+		}
+
+		// Check if .git exists (file for worktree, or directory for full clone)
+		if _, err := os.Stat(gitPath); os.IsNotExist(err) {
+			// Clone exists but no .git - incomplete worktree, remove it
+			_ = os.RemoveAll(polecatDir)
+			continue
+		}
+	}
 }
 
 // PoolStatus returns information about the name pool.
@@ -885,6 +1013,15 @@ func (m *Manager) Get(name string) (*Polecat, error) {
 // SetState updates a polecat's state.
 // In the beads model, state is derived from issue status:
 // - StateWorking/StateActive: issue status set to in_progress
+// SetAgentState updates the agent bead's agent_state field.
+// This is called after a polecat session successfully starts to transition
+// from "spawning" to "working", making gt polecat identity show accurate status.
+// Valid states: "spawning", "working", "done", "stuck", "idle"
+func (m *Manager) SetAgentState(name string, state string) error {
+	agentID := m.agentBeadID(name)
+	return m.beads.UpdateAgentState(agentID, state, nil)
+}
+
 // - StateDone: assignee cleared from issue (polecat ready for cleanup)
 // - StateStuck: issue status set to blocked (if supported)
 // If beads is not available, this is a no-op.
@@ -1092,13 +1229,13 @@ func (m *Manager) CleanupStaleBranches() (int, error) {
 
 // StalenessInfo contains details about a polecat's staleness.
 type StalenessInfo struct {
-	Name            string
-	CommitsBehind   int  // How many commits behind origin/main
-	HasActiveSession bool // Whether tmux session is running
-	HasUncommittedWork bool // Whether there's uncommitted or unpushed work
-	AgentState      string // From agent bead (empty if no bead)
-	IsStale         bool   // Overall assessment: safe to clean up
-	Reason          string // Why it's considered stale (or not)
+	Name               string
+	CommitsBehind      int    // How many commits behind origin/main
+	HasActiveSession   bool   // Whether tmux session is running
+	HasUncommittedWork bool   // Whether there's uncommitted or unpushed work
+	AgentState         string // From agent bead (empty if no bead)
+	IsStale            bool   // Overall assessment: safe to clean up
+	Reason             string // Why it's considered stale (or not)
 }
 
 // DetectStalePolecats identifies polecats that are candidates for cleanup.

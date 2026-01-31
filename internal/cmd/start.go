@@ -404,7 +404,7 @@ func startOrRestartCrewMember(t *tmux.Tmux, r *rig.Rig, crewName, townRoot strin
 			// Agent has exited, restart it
 			// Build startup beacon for predecessor discovery via /resume
 			address := fmt.Sprintf("%s/crew/%s", r.Name, crewName)
-			beacon := session.FormatStartupNudge(session.StartupNudgeConfig{
+			beacon := session.FormatStartupBeacon(session.BeaconConfig{
 				Recipient: address,
 				Sender:    "human",
 				Topic:     "restart",
@@ -775,7 +775,8 @@ func cleanupPolecats(townRoot string) {
 			}
 
 			// Clean: remove worktree and branch
-			if err := polecatMgr.RemoveWithOptions(p.Name, true, shutdownNuclear); err != nil {
+			// selfNuke=false because this is gt start --shutdown cleanup, not polecat self-deleting
+			if err := polecatMgr.RemoveWithOptions(p.Name, true, shutdownNuclear, false); err != nil {
 				fmt.Printf("  %s %s/%s: cleanup failed: %v\n",
 					style.Dim.Render("○"), r.Name, p.Name, err)
 				totalSkipped++

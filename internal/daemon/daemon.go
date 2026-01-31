@@ -44,9 +44,10 @@ type Daemon struct {
 	logger       *log.Logger
 	ctx          context.Context
 	cancel       context.CancelFunc
-	curator      *feed.Curator
+	curator       *feed.Curator
 	convoyWatcher *ConvoyWatcher
-	doltServer   *DoltServerManager
+	doltServer    *DoltServerManager
+	krcPruner     *KRCPruner
 
 	// Mass death detection: track recent session deaths
 	deathsMu     sync.Mutex
@@ -176,6 +177,19 @@ func (d *Daemon) Run() error {
 		d.logger.Printf("Warning: failed to start convoy watcher: %v", err)
 	} else {
 		d.logger.Println("Convoy watcher started")
+	}
+
+	// Start KRC pruner for automatic ephemeral data cleanup
+	krcPruner, err := NewKRCPruner(d.config.TownRoot, d.logger.Printf)
+	if err != nil {
+		d.logger.Printf("Warning: failed to create KRC pruner: %v", err)
+	} else {
+		d.krcPruner = krcPruner
+		if err := d.krcPruner.Start(); err != nil {
+			d.logger.Printf("Warning: failed to start KRC pruner: %v", err)
+		} else {
+			d.logger.Println("KRC pruner started")
+		}
 	}
 
 	// Initial heartbeat
@@ -596,13 +610,32 @@ func (d *Daemon) isRigOperational(rigName string) (bool, string) {
 		d.logger.Printf("Warning: no wisp config for %s - parked state may have been lost", rigName)
 	}
 
-	// Check rig status - parked and docked rigs should not have agents auto-started
+	// Check wisp layer first (local/ephemeral overrides)
 	status := cfg.GetString("status")
 	switch status {
 	case "parked":
 		return false, "rig is parked"
 	case "docked":
 		return false, "rig is docked"
+	}
+
+	// Check rig bead labels (global/synced docked status)
+	// This is the persistent docked state set by 'gt rig dock'
+	rigPath := filepath.Join(d.config.TownRoot, rigName)
+	if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.Beads != nil {
+		rigBeadID := fmt.Sprintf("%s-rig-%s", rigCfg.Beads.Prefix, rigName)
+		rigBeadsDir := beads.ResolveBeadsDir(rigPath)
+		bd := beads.NewWithBeadsDir(rigPath, rigBeadsDir)
+		if issue, err := bd.Show(rigBeadID); err == nil {
+			for _, label := range issue.Labels {
+				if label == "status:docked" {
+					return false, "rig is docked (global)"
+				}
+				if label == "status:parked" {
+					return false, "rig is parked (global)"
+				}
+			}
+		}
 	}
 
 	// Check auto_restart config
@@ -691,6 +724,12 @@ func (d *Daemon) shutdown(state *State) error { //nolint:unparam // error return
 	if d.convoyWatcher != nil {
 		d.convoyWatcher.Stop()
 		d.logger.Println("Convoy watcher stopped")
+	}
+
+	// Stop KRC pruner
+	if d.krcPruner != nil {
+		d.krcPruner.Stop()
+		d.logger.Println("KRC pruner stopped")
 	}
 
 	// Stop Dolt server if we're managing it
