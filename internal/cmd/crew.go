@@ -32,7 +32,7 @@ var crewCmd = &cobra.Command{
 	Long: `Manage crew workers - persistent workspaces for human developers.
 
 CREW VS POLECATS:
-  Polecats: Ephemeral. Witness-managed. Auto-nuked after work.
+  Polecats: Ephemeral sessions. Witness-managed. Auto-nuked after work.
   Crew:     Persistent. User-managed. Stays until you remove it.
 
 Crew workers are full git clones (not worktrees) for human developers
@@ -248,15 +248,23 @@ Examples:
 }
 
 var crewNextCmd = &cobra.Command{
-	Use:    "next",
-	Short:  "Switch to next crew session in same rig",
+	Use:   "next",
+	Short: "Switch to next crew session in same rig",
+	Long: `Switch to the next crew tmux session within the same rig.
+
+Used internally by tmux keybindings for quick session cycling.
+Pass --session to specify the current tmux session name.`,
 	Hidden: true, // Internal command for tmux keybindings
 	RunE:   runCrewNext,
 }
 
 var crewPrevCmd = &cobra.Command{
-	Use:    "prev",
-	Short:  "Switch to previous crew session in same rig",
+	Use:   "prev",
+	Short: "Switch to previous crew session in same rig",
+	Long: `Switch to the previous crew tmux session within the same rig.
+
+Used internally by tmux keybindings for quick session cycling.
+Pass --session to specify the current tmux session name.`,
 	Hidden: true, // Internal command for tmux keybindings
 	RunE:   runCrewPrev,
 }

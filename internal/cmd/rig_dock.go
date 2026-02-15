@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
@@ -72,8 +75,7 @@ func runRigDock(cmd *cobra.Command, args []string) error {
 	branchCmd := exec.Command("git", "branch", "--show-current")
 	branchOutput, err := branchCmd.Output()
 	if err == nil {
-		currentBranch := string(branchOutput)
-		currentBranch = currentBranch[:len(currentBranch)-1] // trim newline
+		currentBranch := strings.TrimSpace(string(branchOutput))
 		if currentBranch != "main" && currentBranch != "master" {
 			return fmt.Errorf("cannot dock: must be on main branch (currently on %s)\n"+
 				"Docking on other branches won't persist. Run: git checkout main", currentBranch)
@@ -101,10 +103,10 @@ func runRigDock(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// Rig identity bead doesn't exist (legacy rig) - create it
 		fmt.Printf("  Creating rig identity bead %s...\n", rigBeadID)
-		rigBead, err = bd.CreateRigBead(rigBeadID, rigName, &beads.RigFields{
+		rigBead, err = bd.CreateRigBead(rigName, &beads.RigFields{
 			Repo:   r.GitURL,
 			Prefix: prefix,
-			State:  "active",
+			State:  beads.RigStateActive,
 		})
 		if err != nil {
 			return fmt.Errorf("creating rig identity bead: %w", err)
@@ -188,8 +190,7 @@ func runRigUndock(cmd *cobra.Command, args []string) error {
 	branchCmd := exec.Command("git", "branch", "--show-current")
 	branchOutput, err := branchCmd.Output()
 	if err == nil {
-		currentBranch := string(branchOutput)
-		currentBranch = currentBranch[:len(currentBranch)-1] // trim newline
+		currentBranch := strings.TrimSpace(string(branchOutput))
 		if currentBranch != "main" && currentBranch != "master" {
 			return fmt.Errorf("cannot undock: must be on main branch (currently on %s)\n"+
 				"Undocking on other branches won't persist. Run: git checkout main", currentBranch)
@@ -252,9 +253,9 @@ func runRigUndock(cmd *cobra.Command, args []string) error {
 // on the rig identity bead. This function is exported for use by the daemon.
 func IsRigDocked(townRoot, rigName, prefix string) bool {
 	// Construct the rig beads path
-	rigPath := townRoot + "/" + rigName
-	beadsPath := rigPath + "/mayor/rig"
-	if _, err := exec.Command("test", "-d", beadsPath).CombinedOutput(); err != nil {
+	rigPath := filepath.Join(townRoot, rigName)
+	beadsPath := filepath.Join(rigPath, "mayor", "rig")
+	if _, err := os.Stat(beadsPath); err != nil {
 		beadsPath = rigPath
 	}
 

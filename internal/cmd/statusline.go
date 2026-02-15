@@ -20,8 +20,13 @@ var (
 )
 
 var statusLineCmd = &cobra.Command{
-	Use:    "status-line",
-	Short:  "Output status line content for tmux (internal use)",
+	Use:   "status-line",
+	Short: "Output status line content for tmux (internal use)",
+	Long: `Output formatted status line content for the tmux status bar.
+
+Called internally by the tmux status-right configuration. Displays
+the current rig, role, worker name, and active issue. Pass --session
+to specify which tmux session to query.`,
 	Hidden: true, // Internal command called by tmux
 	RunE:   runStatusLine,
 }
@@ -363,7 +368,14 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		if led == "🅿️" {
 			space = "  "
 		}
-		rigParts = append(rigParts, led+space+rig.name)
+		// Abbreviate rig names to beads prefix when >2 rigs
+		displayName := rig.name
+		if len(rigs) > 2 && townRoot != "" {
+			if prefix := config.GetRigPrefix(townRoot, rig.name); prefix != "" {
+				displayName = prefix
+			}
+		}
+		rigParts = append(rigParts, led+space+displayName)
 	}
 
 	if len(rigParts) > 0 {
@@ -435,7 +447,7 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 	rigCount := len(rigs)
 
 	// Build status
-	// Note: Polecats excluded - they're ephemeral and idle detection is a GC concern
+	// Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
 	var parts []string
 	parts = append(parts, fmt.Sprintf("%d rigs", rigCount))
 
@@ -464,7 +476,7 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 
 // runWitnessStatusLine outputs status for a witness session.
 // Shows: crew count, hook or mail preview
-// Note: Polecats excluded - they're ephemeral and idle detection is a GC concern
+// Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
 func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 	if rigName == "" {
 		// Try to extract from session name: gt-<rig>-witness
@@ -642,53 +654,8 @@ func isSessionWorking(t *tmux.Tmux, session string) bool {
 	return false
 }
 
-// getUnreadMailCount returns unread mail count for an identity.
-// Fast path - returns 0 on any error.
-func getUnreadMailCount(identity string) int {
-	// Find workspace
-	workDir, err := findMailWorkDir()
-	if err != nil {
-		return 0
-	}
-
-	// Create mailbox using beads
-	mailbox := mail.NewMailboxBeads(identity, workDir)
-
-	// Get count
-	_, unread, err := mailbox.Count()
-	if err != nil {
-		return 0
-	}
-
-	return unread
-}
-
-// getMailPreview returns unread count and a truncated subject of the first unread message.
-// Returns (count, subject) where subject is empty if no unread mail.
-func getMailPreview(identity string, maxLen int) (int, string) {
-	workDir, err := findMailWorkDir()
-	if err != nil {
-		return 0, ""
-	}
-
-	mailbox := mail.NewMailboxBeads(identity, workDir)
-
-	// Get unread messages
-	messages, err := mailbox.ListUnread()
-	if err != nil || len(messages) == 0 {
-		return 0, ""
-	}
-
-	// Get first message subject, truncated
-	subject := messages[0].Subject
-	if len(subject) > maxLen {
-		subject = subject[:maxLen-1] + "…"
-	}
-
-	return len(messages), subject
-}
-
-// getMailPreviewWithRoot is like getMailPreview but uses an explicit town root.
+// getMailPreviewWithRoot returns unread count and a truncated subject of the first unread message,
+// using an explicit town root.
 func getMailPreviewWithRoot(identity string, maxLen int, townRoot string) (int, string) {
 	// Use NewMailboxFromAddress to normalize identity (e.g., gastown/crew/gus -> gastown/gus)
 	mailbox := mail.NewMailboxFromAddress(identity, townRoot)

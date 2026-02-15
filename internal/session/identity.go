@@ -114,6 +114,11 @@ func ParseSessionName(session string) (*AgentIdentity, error) {
 		return nil, fmt.Errorf("invalid session name %q: empty after prefix", session)
 	}
 
+	// Special case: gt-boot is the Boot watchdog (deacon infrastructure)
+	if suffix == "boot" {
+		return &AgentIdentity{Role: RoleDeacon, Name: "boot"}, nil
+	}
+
 	// Parse into parts for rig-level roles
 	parts := strings.Split(suffix, "-")
 	if len(parts) < 2 {
@@ -137,6 +142,20 @@ func ParseSessionName(session string) (*AgentIdentity, error) {
 			name := strings.Join(parts[i+1:], "-")
 			return &AgentIdentity{Role: RoleCrew, Rig: rig, Name: name}, nil
 		}
+	}
+
+	// Legacy format: gt-witness-<rig> or gt-refinery-<rig>
+	// (role appears before rig, opposite of canonical format)
+	// NOTE: This collides with rigs named "witness" or "refinery" —
+	// polecats in such rigs would be misidentified as patrol agents.
+	// Restriction: do not name a rig "witness" or "refinery".
+	if parts[0] == "witness" && len(parts) >= 2 {
+		rig := strings.Join(parts[1:], "-")
+		return &AgentIdentity{Role: RoleWitness, Rig: rig}, nil
+	}
+	if parts[0] == "refinery" && len(parts) >= 2 {
+		rig := strings.Join(parts[1:], "-")
+		return &AgentIdentity{Role: RoleRefinery, Rig: rig}, nil
 	}
 
 	// Default to polecat: rig is everything except the last segment

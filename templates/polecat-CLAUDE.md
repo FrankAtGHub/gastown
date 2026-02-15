@@ -126,6 +126,9 @@ bd close <step-id>
 4. If molecule attached, find current step: `bd ready`
 5. Execute the step, close it, repeat
 
+**If NO work on hook and NO mail:** run `gt done` immediately and exit.
+Polecat sessions are ephemeral - no work means terminate, not wait.
+
 ---
 
 ## Key Commands
@@ -157,6 +160,16 @@ bd show <id>                # View issue details
 bd close <id> --reason "..." # Close issue when done
 bd create --title "..."     # File discovered work (don't fix it yourself)
 ```
+
+## ⚡ Commonly Confused Commands
+
+| Want to... | Correct command | Common mistake |
+|------------|----------------|----------------|
+| Signal work complete | `gt done` | ~~gt unsling~~ or sitting idle (Idle Polecat heresy) |
+| Message another agent | `gt nudge <target> "msg"` | ~~tmux send-keys~~ (unreliable, drops Enter) |
+| Find next mol step | `bd ready` | ~~bd list~~ (shows all issues, not next step) |
+| File discovered work | `bd create "title"` | Fixing it yourself (stay on YOUR issue) |
+| Ask Witness for help | `gt mail send {{rig}}/witness -s "HELP" -m "..."` | ~~gt nudge witness~~ (mail has more context) |
 
 ---
 

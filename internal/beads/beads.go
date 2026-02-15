@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/steveyegge/gastown/internal/runtime"
 )
@@ -20,7 +21,22 @@ import (
 var (
 	ErrNotInstalled = errors.New("bd not installed: run 'pip install beads-cli' or see https://github.com/anthropics/beads")
 	ErrNotFound     = errors.New("issue not found")
+	ErrFlagTitle    = errors.New("title looks like a CLI flag (starts with '-'); use --title=\"...\" to set flag-like titles intentionally")
 )
+
+// IsFlagLikeTitle returns true if the title looks like it was accidentally set
+// from a CLI flag (e.g., "--help", "--json", "-v"). This catches a common
+// mistake where `bd create --title --help` consumes --help as the title value
+// instead of showing help. Titles with spaces (e.g., "Fix --help handling")
+// are allowed since they're clearly intentional multi-word titles.
+func IsFlagLikeTitle(title string) bool {
+	if !strings.HasPrefix(title, "-") {
+		return false
+	}
+	// Single-word flag-like strings: "--help", "-h", "--json", "--verbose"
+	// Multi-word titles with flags embedded are fine: "Fix --help handling"
+	return !strings.Contains(title, " ")
+}
 
 // Issue represents a beads issue.
 type Issue struct {
@@ -58,6 +74,16 @@ type Issue struct {
 	Dependents   []IssueDep `json:"dependents,omitempty"`
 }
 
+// HasLabel checks if an issue has a specific label.
+func HasLabel(issue *Issue, label string) bool {
+	for _, l := range issue.Labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
+}
+
 // IssueDep represents a dependency or dependent issue with its relation.
 type IssueDep struct {
 	ID             string `json:"id"`
@@ -77,6 +103,7 @@ type ListOptions struct {
 	Parent     string // filter by parent ID
 	Assignee   string // filter by assignee (e.g., "gastown/Toast")
 	NoAssignee bool   // filter for issues with no assignee
+	Limit      int    // Max results (0 = unlimited, overrides bd default of 50)
 }
 
 // CreateOptions specifies options for creating an issue.
@@ -119,7 +146,7 @@ type Beads struct {
 	// Lazy-cached town root for routing resolution.
 	// Populated on first call to getTownRoot() to avoid filesystem walk on every operation.
 	townRoot     string
-	searchedRoot bool
+	townRootOnce sync.Once
 }
 
 // New creates a new Beads wrapper for the given directory.
@@ -153,11 +180,11 @@ func (b *Beads) getActor() string {
 // getTownRoot returns the Gas Town root directory, using lazy caching.
 // The town root is found by walking up from workDir looking for mayor/town.json.
 // Returns empty string if not in a Gas Town project.
+// Thread-safe: uses sync.Once to prevent races on concurrent access.
 func (b *Beads) getTownRoot() string {
-	if !b.searchedRoot {
+	b.townRootOnce.Do(func() {
 		b.townRoot = FindTownRoot(b.workDir)
-		b.searchedRoot = true
-	}
+	})
 	return b.townRoot
 }
 
@@ -179,11 +206,9 @@ func (b *Beads) Init(prefix string) error {
 
 // run executes a bd command and returns stdout.
 func (b *Beads) run(args ...string) ([]byte, error) {
-	// Use --no-daemon for faster read operations (avoids daemon IPC overhead)
-	// The daemon is primarily useful for write coalescing, not reads.
 	// Use --allow-stale to prevent failures when db is out of sync with JSONL
 	// (e.g., after daemon is killed during shutdown before syncing).
-	fullArgs := append([]string{"--no-daemon", "--allow-stale"}, args...)
+	fullArgs := append([]string{"--allow-stale"}, args...)
 
 	// Always explicitly set BEADS_DIR to prevent inherited env vars from
 	// causing prefix mismatches. Use explicit beadsDir if set, otherwise
@@ -219,16 +244,13 @@ func (b *Beads) run(args ...string) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Limit concurrent bd processes to prevent dolt embedded lock contention.
-	AcquireBd()
 	err := cmd.Run()
-	ReleaseBd()
 	if err != nil {
 		return nil, b.wrapError(err, stderr.String(), args)
 	}
 
-	// Handle bd --no-daemon exit code 0 bug: when issue not found,
-	// --no-daemon exits 0 but writes error to stderr with empty stdout.
+	// Handle bd exit code 0 bug: when issue not found,
+	// bd may exit 0 but write error to stderr with empty stdout.
 	// Detect this case and treat as error to avoid JSON parse failures.
 	if stdout.Len() == 0 && stderr.Len() > 0 {
 		return nil, b.wrapError(fmt.Errorf("command produced no output"), stderr.String(), args)
@@ -315,6 +337,12 @@ func (b *Beads) List(opts ListOptions) ([]*Issue, error) {
 	}
 	if opts.NoAssignee {
 		args = append(args, "--no-assignee")
+	}
+	if opts.Limit > 0 {
+		args = append(args, fmt.Sprintf("--limit=%d", opts.Limit))
+	} else {
+		// Override bd's default limit of 50 to avoid silent truncation
+		args = append(args, "--limit=0")
 	}
 
 	out, err := b.run(args...)
@@ -417,6 +445,14 @@ func (b *Beads) ReadyWithType(issueType string) ([]*Issue, error) {
 
 // Show returns detailed information about an issue.
 func (b *Beads) Show(id string) (*Issue, error) {
+	// Route cross-rig queries via routes.jsonl so that rig-level bead IDs
+	// (e.g., "gt-abc123") resolve to the correct rig database.
+	targetDir := ResolveRoutingTarget(b.getTownRoot(), id, b.getResolvedBeadsDir())
+	if targetDir != b.getResolvedBeadsDir() {
+		target := NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
+		return target.Show(id)
+	}
+
 	out, err := b.run("show", id, "--json")
 	if err != nil {
 		return nil, err
@@ -446,8 +482,7 @@ func (b *Beads) ShowMultiple(ids []string) (map[string]*Issue, error) {
 	args := append([]string{"show", "--json"}, ids...)
 	out, err := b.run(args...)
 	if err != nil {
-		// If bd fails, return empty map (some IDs might not exist)
-		return make(map[string]*Issue), nil
+		return nil, fmt.Errorf("bd show: %w", err)
 	}
 
 	var issues []*Issue
@@ -482,6 +517,11 @@ func (b *Beads) Blocked() ([]*Issue, error) {
 // If opts.Actor is empty, it defaults to the BD_ACTOR environment variable.
 // This ensures created_by is populated for issue provenance tracking.
 func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
+	// Guard against flag-like titles (gt-e0kx5: --help garbage beads)
+	if IsFlagLikeTitle(opts.Title) {
+		return nil, fmt.Errorf("refusing to create bead: %w (got %q)", ErrFlagTitle, opts.Title)
+	}
+
 	args := []string{"create", "--json"}
 
 	if opts.Title != "" {
@@ -530,6 +570,11 @@ func (b *Beads) Create(opts CreateOptions) (*Issue, error) {
 // This is useful for agent beads, role beads, and other beads that need
 // deterministic IDs rather than auto-generated ones.
 func (b *Beads) CreateWithID(id string, opts CreateOptions) (*Issue, error) {
+	// Guard against flag-like titles (gt-e0kx5: --help garbage beads)
+	if IsFlagLikeTitle(opts.Title) {
+		return nil, fmt.Errorf("refusing to create bead: %w (got %q)", ErrFlagTitle, opts.Title)
+	}
+
 	args := []string{"create", "--json", "--id=" + id}
 	if NeedsForceForID(id) {
 		args = append(args, "--force")

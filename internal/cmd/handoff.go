@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,9 @@ var (
 	handoffSubject string
 	handoffMessage string
 	handoffCollect bool
+	handoffStdin   bool
+	handoffAuto    bool
+	handoffReason  string
 )
 
 func init() {
@@ -65,10 +69,31 @@ func init() {
 	handoffCmd.Flags().StringVarP(&handoffSubject, "subject", "s", "", "Subject for handoff mail (optional)")
 	handoffCmd.Flags().StringVarP(&handoffMessage, "message", "m", "", "Message body for handoff mail (optional)")
 	handoffCmd.Flags().BoolVarP(&handoffCollect, "collect", "c", false, "Auto-collect state (status, inbox, beads) into handoff message")
+	handoffCmd.Flags().BoolVar(&handoffStdin, "stdin", false, "Read message body from stdin (avoids shell quoting issues)")
+	handoffCmd.Flags().BoolVar(&handoffAuto, "auto", false, "Save state only, no session cycling (for PreCompact hooks)")
+	handoffCmd.Flags().StringVar(&handoffReason, "reason", "", "Reason for handoff (e.g., 'compaction', 'idle')")
 	rootCmd.AddCommand(handoffCmd)
 }
 
 func runHandoff(cmd *cobra.Command, args []string) error {
+	// Handle --stdin: read message body from stdin (avoids shell quoting issues)
+	if handoffStdin {
+		if handoffMessage != "" {
+			return fmt.Errorf("cannot use --stdin with --message/-m")
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading stdin: %w", err)
+		}
+		handoffMessage = strings.TrimRight(string(data), "\n")
+	}
+
+	// --auto mode: save state only, no session cycling.
+	// Used by PreCompact hook to preserve state before compaction.
+	if handoffAuto {
+		return runHandoffAuto()
+	}
+
 	// Check if we're a polecat - polecats use gt done instead
 	// GT_POLECAT is set by the session manager when starting polecat sessions
 	if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" {
@@ -235,6 +260,67 @@ func runHandoff(cmd *cobra.Command, args []string) error {
 	return t.RespawnPane(pane, restartCmd)
 }
 
+// runHandoffAuto saves state without cycling the session.
+// Used by the PreCompact hook to preserve context before compaction.
+// No tmux required — just collects state, sends handoff mail, and writes marker.
+func runHandoffAuto() error {
+	// Build subject
+	subject := handoffSubject
+	if subject == "" {
+		reason := handoffReason
+		if reason == "" {
+			reason = "auto"
+		}
+		subject = fmt.Sprintf("🤝 HANDOFF: %s", reason)
+	}
+
+	// Auto-collect state if no explicit message
+	message := handoffMessage
+	if message == "" {
+		message = collectHandoffState()
+	}
+
+	if handoffDryRun {
+		fmt.Printf("[auto-handoff] Would send mail: subject=%q\n", subject)
+		fmt.Printf("[auto-handoff] Would write handoff marker\n")
+		return nil
+	}
+
+	// Send handoff mail to self
+	beadID, err := sendHandoffMail(subject, message)
+	if err != nil {
+		// Non-fatal — log and continue
+		fmt.Fprintf(os.Stderr, "auto-handoff: could not send mail: %v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "auto-handoff: saved state to %s\n", beadID)
+	}
+
+	// Write handoff marker so post-compact prime knows it's post-handoff
+	if cwd, err := os.Getwd(); err == nil {
+		runtimeDir := filepath.Join(cwd, constants.DirRuntime)
+		_ = os.MkdirAll(runtimeDir, 0755)
+		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
+		sessionName := "auto-handoff"
+		if tmux.IsInsideTmux() {
+			if name, err := getCurrentTmuxSession(); err == nil {
+				sessionName = name
+			}
+		}
+		_ = os.WriteFile(markerPath, []byte(sessionName), 0644)
+	}
+
+	// Log handoff event
+	if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
+		agent := detectSender()
+		if agent == "" || agent == "overseer" {
+			agent = "unknown"
+		}
+		_ = events.LogFeed(events.TypeHandoff, agent, events.HandoffPayload(subject, false))
+	}
+
+	return nil
+}
+
 // getCurrentTmuxSession returns the current tmux session name.
 func getCurrentTmuxSession() (string, error) {
 	out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
@@ -396,6 +482,12 @@ func buildRestartCommand(sessionName string) (string, error) {
 	}
 	gtRole := identity.GTRole()
 
+	// Derive rigPath from session identity for --settings flag resolution
+	rigPath := ""
+	if identity.Rig != "" {
+		rigPath = filepath.Join(townRoot, identity.Rig)
+	}
+
 	// Build startup beacon for predecessor discovery via /resume
 	// Use FormatStartupBeacon instead of bare "gt prime" which confuses agents
 	// The SessionStart hook handles context injection (gt prime --hook)
@@ -414,22 +506,46 @@ func buildRestartCommand(sessionName string) (string, error) {
 	//
 	// Check if current session is using a non-default agent (GT_AGENT env var).
 	// If so, preserve it across handoff by using the override variant.
+	// Fall back to tmux session environment if process env doesn't have it,
+	// since exec env vars may not propagate through all agent runtimes.
 	currentAgent := os.Getenv("GT_AGENT")
+	if currentAgent == "" {
+		t := tmux.NewTmux()
+		if val, err := t.GetEnvironment(sessionName, "GT_AGENT"); err == nil && val != "" {
+			currentAgent = val
+		}
+	}
 	var runtimeCmd string
 	if currentAgent != "" {
 		var err error
-		runtimeCmd, err = config.GetRuntimeCommandWithPromptAndAgentOverride("", beacon, currentAgent)
+		runtimeCmd, err = config.GetRuntimeCommandWithPromptAndAgentOverride(rigPath, beacon, currentAgent)
 		if err != nil {
 			return "", fmt.Errorf("resolving agent config: %w", err)
 		}
 	} else {
-		runtimeCmd = config.GetRuntimeCommandWithPrompt("", beacon)
+		runtimeCmd = config.GetRuntimeCommandWithPrompt(rigPath, beacon)
 	}
 
 	// Build environment exports - role vars first, then Claude vars
 	var exports []string
+	var agentEnv map[string]string // agent config Env (rc.toml [agents.X.env])
 	if gtRole != "" {
-		runtimeConfig := config.LoadRuntimeConfig("")
+		simpleRole := config.ExtractSimpleRole(gtRole)
+		// When GT_AGENT is set, resolve config with the override so we pick up
+		// the active agent's env (e.g., NODE_OPTIONS from [agents.X.env]).
+		// Otherwise, fall back to role-based resolution.
+		var runtimeConfig *config.RuntimeConfig
+		if currentAgent != "" {
+			rc, _, err := config.ResolveAgentConfigWithOverride(townRoot, rigPath, currentAgent)
+			if err == nil {
+				runtimeConfig = rc
+			} else {
+				runtimeConfig = config.ResolveRoleAgentConfig(simpleRole, townRoot, rigPath)
+			}
+		} else {
+			runtimeConfig = config.ResolveRoleAgentConfig(simpleRole, townRoot, rigPath)
+		}
+		agentEnv = runtimeConfig.Env
 		exports = append(exports, "GT_ROLE="+gtRole)
 		exports = append(exports, "BD_ACTOR="+gtRole)
 		exports = append(exports, "GIT_AUTHOR_NAME="+gtRole)
@@ -453,6 +569,19 @@ func buildRestartCommand(sessionName string) (string, error) {
 			// Shell-escape the value in case it contains special chars
 			exports = append(exports, fmt.Sprintf("%s=%q", name, val))
 		}
+	}
+
+	// Clear NODE_OPTIONS to prevent debugger flags (e.g., --inspect from VSCode)
+	// from being inherited through tmux into Claude's Node.js runtime.
+	// When the agent's runtime config explicitly sets NODE_OPTIONS (e.g., for
+	// memory tuning via --max-old-space-size in rc.toml [agents.X.env]), export
+	// that value so it survives handoff. Otherwise clear it.
+	// Note: agentEnv is intentionally nil when gtRole is empty (non-role handoffs),
+	// which causes the nil map lookup to return ("", false) — clearing NODE_OPTIONS.
+	if val, hasNodeOpts := agentEnv["NODE_OPTIONS"]; hasNodeOpts {
+		exports = append(exports, fmt.Sprintf("NODE_OPTIONS=%q", val))
+	} else {
+		exports = append(exports, "NODE_OPTIONS=")
 	}
 
 	if len(exports) > 0 {
@@ -479,19 +608,11 @@ func sessionWorkDir(sessionName, townRoot string) (string, error) {
 
 	case strings.Contains(sessionName, "-crew-"):
 		// gt-<rig>-crew-<name> -> <townRoot>/<rig>/crew/<name>
-		parts := strings.Split(sessionName, "-")
-		if len(parts) < 4 {
-			return "", fmt.Errorf("invalid crew session name: %s", sessionName)
+		rig, name, ok := parseCrewSessionName(sessionName)
+		if !ok {
+			return "", fmt.Errorf("cannot parse crew session name: %s", sessionName)
 		}
-		// Find the index of "crew" to split rig name (may contain dashes)
-		for i, p := range parts {
-			if p == "crew" && i > 1 && i < len(parts)-1 {
-				rig := strings.Join(parts[1:i], "-")
-				name := strings.Join(parts[i+1:], "-")
-				return fmt.Sprintf("%s/%s/crew/%s", townRoot, rig, name), nil
-			}
-		}
-		return "", fmt.Errorf("cannot parse crew session name: %s", sessionName)
+		return fmt.Sprintf("%s/%s/crew/%s", townRoot, rig, name), nil
 
 	case strings.HasSuffix(sessionName, "-witness"):
 		// gt-<rig>-witness -> <townRoot>/<rig>/witness
@@ -688,16 +809,18 @@ func sendHandoffMail(subject, message string) (string, error) {
 
 	// Create mail bead directly using bd create with --silent to get the ID
 	// Mail goes to town-level beads (hq- prefix)
+	// Flags go first, then -- to end flag parsing, then the positional subject.
+	// This prevents subjects like "--help" from being parsed as flags.
 	args := []string{
-		"create", subject,
-		"--type", "message",
+		"create",
 		"--assignee", agentID,
 		"-d", message,
 		"--priority", "2",
-		"--labels", labels,
+		"--labels", labels + ",gt:message",
 		"--actor", agentID,
 		"--ephemeral", // Handoff mail is ephemeral
 		"--silent",    // Output only the bead ID
+		"--", subject,
 	}
 
 	cmd := exec.Command("bd", args...)

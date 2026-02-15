@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/claude"
-	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -26,15 +24,19 @@ var (
 // SessionManager handles dog session lifecycle.
 type SessionManager struct {
 	tmux     *tmux.Tmux
+	mgr      *Manager
 	townRoot string
 	townName string
 }
 
 // NewSessionManager creates a new dog session manager.
-func NewSessionManager(t *tmux.Tmux, townRoot string) *SessionManager {
+// The Manager parameter is used to sync persistent dog state (idle/working)
+// when sessions start and stop.
+func NewSessionManager(t *tmux.Tmux, townRoot string, mgr *Manager) *SessionManager {
 	townName, _ := workspace.GetTownName(townRoot)
 	return &SessionManager{
 		tmux:     t,
+		mgr:      mgr,
 		townRoot: townRoot,
 		townName: townName,
 	}
@@ -79,7 +81,7 @@ func (m *SessionManager) kennelPath(dogName string) string {
 }
 
 // Start creates and starts a new session for a dog.
-// Dogs run Claude sessions that check mail for work and execute formulas.
+// Dogs run agent sessions that check mail for work and execute formulas.
 func (m *SessionManager) Start(dogName string, opts SessionStartOptions) error {
 	kennelDir := m.kennelPath(dogName)
 	if _, err := os.Stat(kennelDir); os.IsNotExist(err) {
@@ -88,82 +90,52 @@ func (m *SessionManager) Start(dogName string, opts SessionStartOptions) error {
 
 	sessionID := m.SessionName(dogName)
 
-	// Check if session already exists
-	running, err := m.tmux.HasSession(sessionID)
+	// Kill any existing zombie session (tmux alive but agent dead).
+	_, err := session.KillExistingSession(m.tmux, sessionID, true)
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
-	}
-	if running {
-		// Session exists - check if Claude is actually running
-		if m.tmux.IsAgentRunning(sessionID) {
-			return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
-		}
-		// Zombie session - kill and recreate
-		if err := m.tmux.KillSessionWithProcesses(sessionID); err != nil {
-			return fmt.Errorf("killing zombie session: %w", err)
-		}
+		return fmt.Errorf("%w: %s", ErrSessionRunning, sessionID)
 	}
 
-	// Ensure Claude settings exist for dogs
-	if err := claude.EnsureSettingsForRole(kennelDir, "dog"); err != nil {
-		return fmt.Errorf("ensuring Claude settings: %w", err)
-	}
-
-	// Build startup prompt - dogs check mail for work
-	address := fmt.Sprintf("deacon/dogs/%s", dogName)
+	// Build instructions for the dog
 	workInfo := ""
 	if opts.WorkDesc != "" {
 		workInfo = fmt.Sprintf(" Work assigned: %s.", opts.WorkDesc)
 	}
-	beacon := session.FormatStartupBeacon(session.BeaconConfig{
-		Recipient: address,
-		Sender:    "deacon",
-		Topic:     "assigned",
-	})
-	initialPrompt := fmt.Sprintf("I am Dog %s.%s Check mail for work: `" + cli.Name() + " mail inbox`. Execute assigned formula/bead. When done, send DOG_DONE mail to deacon/ and return to idle.", dogName, workInfo)
+	instructions := fmt.Sprintf("I am Dog %s.%s Check mail for work: `"+cli.Name()+" mail inbox`. Execute assigned formula/bead. When done, send DOG_DONE mail to deacon/ and return to idle.", dogName, workInfo)
 
-	// Build startup command
-	startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("dog", "", m.townRoot, "", beacon+"\n"+initialPrompt, opts.AgentOverride)
-	if err != nil {
-		return fmt.Errorf("building startup command: %w", err)
-	}
-
-	// Create session with command
-	if err := m.tmux.NewSessionWithCommand(sessionID, kennelDir, startupCmd); err != nil {
-		return fmt.Errorf("creating tmux session: %w", err)
-	}
-
-	// Set environment variables
-	envVars := config.AgentEnv(config.AgentEnvConfig{
-		Role:     "dog",
-		TownRoot: m.townRoot,
-	})
-	for k, v := range envVars {
-		_ = m.tmux.SetEnvironment(sessionID, k, v)
-	}
-
-	// Apply dog theming
+	// Use unified session lifecycle.
 	theme := tmux.DogTheme()
-	_ = m.tmux.ConfigureGasTownSession(sessionID, theme, "", dogName, "dog")
-
-	// Wait for Claude to start
-	if err := m.tmux.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-		_ = m.tmux.KillSessionWithProcesses(sessionID)
-		return fmt.Errorf("waiting for dog to start: %w", err)
-	}
-
-	// Accept bypass permissions warning if it appears
-	_ = m.tmux.AcceptBypassPermissionsWarning(sessionID)
-
-	time.Sleep(constants.ShutdownNotifyDelay)
-
-	// Verify session survived startup
-	running, err = m.tmux.HasSession(sessionID)
+	_, err = session.StartSession(m.tmux, session.SessionConfig{
+		SessionID: sessionID,
+		WorkDir:   kennelDir,
+		Role:      "dog",
+		TownRoot:  m.townRoot,
+		AgentName: dogName,
+		Beacon: session.BeaconConfig{
+			Recipient: fmt.Sprintf("deacon/dogs/%s", dogName),
+			Sender:    "deacon",
+			Topic:     "assigned",
+		},
+		Instructions:   instructions,
+		AgentOverride:  opts.AgentOverride,
+		Theme:          &theme,
+		WaitForAgent:   true,
+		WaitFatal:      true,
+		AcceptBypass:   true,
+		ReadyDelay:     true,
+		VerifySurvived: true,
+		TrackPID:       true,
+	})
 	if err != nil {
-		return fmt.Errorf("verifying session: %w", err)
+		return err
 	}
-	if !running {
-		return fmt.Errorf("session %s died during startup", sessionID)
+
+	// Update persistent state to working
+	if m.mgr != nil {
+		if err := m.mgr.SetState(dogName, StateWorking); err != nil {
+			// Log but don't fail - session is running, state sync is best-effort
+			fmt.Fprintf(os.Stderr, "warning: failed to set dog %s state to working: %v\n", dogName, err)
+		}
 	}
 
 	return nil
@@ -184,11 +156,18 @@ func (m *SessionManager) Stop(dogName string, force bool) error {
 	// Try graceful shutdown first
 	if !force {
 		_ = m.tmux.SendKeysRaw(sessionID, "C-c")
-		time.Sleep(100 * time.Millisecond)
+		session.WaitForSessionExit(m.tmux, sessionID, constants.GracefulShutdownTimeout)
 	}
 
 	if err := m.tmux.KillSessionWithProcesses(sessionID); err != nil {
 		return fmt.Errorf("killing session: %w", err)
+	}
+
+	// Update persistent state to idle so dog is available for reassignment
+	if m.mgr != nil {
+		if err := m.mgr.SetState(dogName, StateIdle); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to set dog %s state to idle: %v\n", dogName, err)
+		}
 	}
 
 	return nil

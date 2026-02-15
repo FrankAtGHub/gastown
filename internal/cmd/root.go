@@ -61,7 +61,9 @@ var beadsExemptCommands = map[string]bool{
 	"install":    true,
 	"tap":        true,
 	"dnd":        true,
-	"krc":        true, // KRC doesn't require beads
+	"signal":        true, // Hook signal handlers must be fast, handle beads internally
+	"krc":           true, // KRC doesn't require beads
+	"run-migration": true, // Migration orchestrator handles its own beads checks
 }
 
 // Commands exempt from the town root branch warning.
@@ -78,14 +80,14 @@ var branchCheckExemptCommands = map[string]bool{
 // persistentPreRun runs before every command.
 func persistentPreRun(cmd *cobra.Command, args []string) error {
 	// Check if binary was built properly (via make build, not raw go build).
-	// Raw go build produces unsigned binaries that macOS will kill.
+	// Raw go build produces unsigned binaries that macOS may kill.
+	// Warning only - doesn't block execution.
 	if BuiltProperly == "" {
-		fmt.Fprintln(os.Stderr, "ERROR: This binary was built with 'go build' directly.")
-		fmt.Fprintln(os.Stderr, "       Use 'make build' to create a properly signed binary.")
+		fmt.Fprintln(os.Stderr, "WARNING: This binary was built with 'go build' directly.")
+		fmt.Fprintln(os.Stderr, "         Use 'make build' to create a properly signed binary.")
 		if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
-			fmt.Fprintf(os.Stderr, "       Run from: %s\n", gtRoot)
+			fmt.Fprintf(os.Stderr, "         Run from: %s\n", gtRoot)
 		}
-		os.Exit(1)
 	}
 
 	// Initialize CLI theme (dark/light mode support)

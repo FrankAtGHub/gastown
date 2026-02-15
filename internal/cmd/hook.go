@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
@@ -87,6 +87,35 @@ Output format (one line):
 	RunE: runHookShow,
 }
 
+// hookAttachCmd attaches a bead to your hook (alias for 'gt hook <bead-id>')
+var hookAttachCmd = &cobra.Command{
+	Use:   "attach <bead-id>",
+	Short: "Attach work to your hook",
+	Long: `Attach a bead to your hook (same as 'gt hook <bead-id>').
+
+Examples:
+  gt hook attach gt-abc               # Attach issue gt-abc to your hook`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runHook(cmd, args)
+	},
+}
+
+// hookDetachCmd detaches a bead from a hook (alias for 'gt hook clear')
+var hookDetachCmd = &cobra.Command{
+	Use:   "detach <bead-id> [target]",
+	Short: "Detach work from a hook",
+	Long: `Remove a specific bead from a hook (same as 'gt hook clear <bead-id>').
+
+Examples:
+  gt hook detach gt-abc               # Detach gt-abc from my hook
+  gt hook detach gt-abc gastown/nux   # Detach gt-abc from nux's hook`,
+	Args: cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runUnslingWith(cmd, args, hookDryRun, hookForce)
+	},
+}
+
 // hookClearCmd clears the hook (alias for 'gt unhook')
 var hookClearCmd = &cobra.Command{
 	Use:   "clear [bead-id] [target]",
@@ -130,12 +159,20 @@ func init() {
 	hookStatusCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
 	hookShowCmd.Flags().BoolVar(&moleculeJSON, "json", false, "Output as JSON")
 
+	// Flags for attach subcommand
+	hookAttachCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Replace existing incomplete hooked bead")
+
+	// Flags for detach subcommand (mirror unsling flags)
+	hookDetachCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Detach even if work is incomplete")
+
 	// Flags for clear subcommand (mirror unsling flags)
 	hookClearCmd.Flags().BoolVarP(&hookDryRun, "dry-run", "n", false, "Show what would be done")
 	hookClearCmd.Flags().BoolVarP(&hookForce, "force", "f", false, "Clear even if work is incomplete")
 
 	hookCmd.AddCommand(hookStatusCmd)
 	hookCmd.AddCommand(hookShowCmd)
+	hookCmd.AddCommand(hookAttachCmd)
+	hookCmd.AddCommand(hookDetachCmd)
 	hookCmd.AddCommand(hookClearCmd)
 
 	rootCmd.AddCommand(hookCmd)
@@ -145,10 +182,7 @@ func init() {
 func runHookOrStatus(cmd *cobra.Command, args []string) error {
 	// --clear flag is alias for 'gt unhook'
 	if hookClear {
-		// Pass through dry-run and force flags
-		unslingDryRun = hookDryRun
-		unslingForce = hookForce
-		return runUnsling(cmd, args)
+		return runUnslingWith(cmd, args, hookDryRun, hookForce)
 	}
 	if len(args) == 0 {
 		// No args - show status
@@ -160,10 +194,7 @@ func runHookOrStatus(cmd *cobra.Command, args []string) error {
 
 // runHookClear handles 'gt hook clear' - delegates to runUnsling
 func runHookClear(cmd *cobra.Command, args []string) error {
-	// Pass through dry-run and force flags from hookClearCmd to unsling
-	unslingDryRun = hookDryRun
-	unslingForce = hookForce
-	return runUnsling(cmd, args)
+	return runUnslingWith(cmd, args, hookDryRun, hookForce)
 }
 
 func runHook(_ *cobra.Command, args []string) error {
@@ -277,14 +308,30 @@ func runHook(_ *cobra.Command, args []string) error {
 	}
 	townBeadsDir := filepath.Join(townRoot, ".beads")
 
-	// Hook the bead using bd update (discovery-based approach)
+	// Hook the bead using bd update with retry logic (discovery-based approach).
 	// Run from town root so bd can find routes.jsonl for prefix-based routing.
 	// This is essential for hooking convoys (hq-* prefix) stored in town beads.
-	hookCmd := exec.Command("bd", "update", beadID, "--status=hooked", "--assignee="+agentID)
-	hookCmd.Dir = townRoot
-	hookCmd.Stderr = os.Stderr
-	if err := hookCmd.Run(); err != nil {
-		return fmt.Errorf("hooking bead: %w", err)
+	// Dolt can fail with concurrency errors (HTTP 400) when multiple agents write
+	// simultaneously. We retry with exponential backoff, matching sling.go behavior.
+	const hookMaxRetries = 5
+	const hookBaseBackoff = 500 * time.Millisecond
+	const hookBackoffMax = 10 * time.Second
+	var lastHookErr error
+	for attempt := 1; attempt <= hookMaxRetries; attempt++ {
+		hookBdCmd := exec.Command("bd", "update", beadID, "--status=hooked", "--assignee="+agentID)
+		hookBdCmd.Dir = townRoot
+		hookBdCmd.Stderr = os.Stderr
+		if err := hookBdCmd.Run(); err != nil {
+			lastHookErr = err
+			if attempt < hookMaxRetries {
+				backoff := slingBackoff(attempt, hookBaseBackoff, hookBackoffMax)
+				fmt.Printf("%s Hook attempt %d failed, retrying in %v...\n", style.Warning.Render("⚠"), attempt, backoff)
+				time.Sleep(backoff)
+				continue
+			}
+			return fmt.Errorf("hooking bead after %d attempts: %w", hookMaxRetries, lastHookErr)
+		}
+		break
 	}
 
 	fmt.Printf("%s Work attached to hook (hooked bead)\n", style.Bold.Render("✓"))
@@ -423,10 +470,5 @@ func runHookShow(cmd *cobra.Command, args []string) error {
 
 // findTownRoot finds the Gas Town root directory.
 func findTownRoot() (string, error) {
-	cmd := exec.Command("gt", "root")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+	return workspace.FindFromCwd()
 }
