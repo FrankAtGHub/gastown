@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/rig"
@@ -87,11 +88,16 @@ func (m *Manager) Start(agentOverride string, envOverrides []string) error {
 		}
 	}
 
+	// Ensure agent bead exists for mail routing
+	townRoot := m.townRoot()
+	if err := m.ensureAgentBead(townRoot); err != nil {
+		log.Printf("warning: could not ensure architect agent bead: %v", err)
+	}
+
 	// Working directory: rig root (architect operates cross-rig from rig home)
 	workDir := m.rig.Path
 
 	// Ensure runtime settings
-	townRoot := m.townRoot()
 	runtimeConfig := config.ResolveRoleAgentConfig("architect", townRoot, m.rig.Path)
 	architectSettingsDir := config.RoleSettingsDir("architect", m.rig.Path)
 	if err := runtime.EnsureSettingsForRole(architectSettingsDir, workDir, "architect", runtimeConfig); err != nil {
@@ -190,4 +196,29 @@ func (m *Manager) townRoot() string {
 		return m.rig.Path
 	}
 	return townRoot
+}
+
+// ensureAgentBead creates the architect agent bead if it doesn't already exist.
+// This enables mail routing to the architect address (e.g., copperhead/architect).
+func (m *Manager) ensureAgentBead(townRoot string) error {
+	prefix := beads.GetPrefixForRig(townRoot, m.rig.Name)
+	if prefix == "" {
+		prefix = "gt"
+	}
+	agentID := beads.AgentBeadIDWithPrefix(prefix, m.rig.Name, "architect", "")
+	bd := beads.New(townRoot)
+
+	// Check if already exists
+	if _, err := bd.Show(agentID); err == nil {
+		return nil
+	}
+
+	fields := &beads.AgentFields{
+		RoleType:   "architect",
+		Rig:        m.rig.Name,
+		AgentState: "idle",
+	}
+
+	_, err := bd.CreateAgentBead(agentID, fmt.Sprintf("Architect for %s - independent quality authority.", m.rig.Name), fields)
+	return err
 }

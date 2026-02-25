@@ -82,13 +82,14 @@ func CrewRoleBeadIDTown() string {
 
 // ValidAgentRoles are the known agent role types for ID pattern validation.
 var ValidAgentRoles = []string{
-	"mayor",    // Town-level: gt-mayor
-	"deacon",   // Town-level: gt-deacon
-	"dog",      // Town-level with name: gt-dog-<name>
-	"witness",  // Per-rig: gt-<rig>-witness
-	"refinery", // Per-rig: gt-<rig>-refinery
-	"crew",     // Per-rig with name: gt-<rig>-crew-<name>
-	"polecat",  // Per-rig with name: gt-<rig>-polecat-<name>
+	"mayor",     // Town-level: gt-mayor
+	"deacon",    // Town-level: gt-deacon
+	"dog",       // Town-level with name: gt-dog-<name>
+	"witness",   // Per-rig: gt-<rig>-witness
+	"refinery",  // Per-rig: gt-<rig>-refinery
+	"architect", // Per-rig: gt-<rig>-architect
+	"crew",      // Per-rig with name: gt-<rig>-crew-<name>
+	"polecat",   // Per-rig with name: gt-<rig>-polecat-<name>
 }
 
 // TownLevelRoles are agent roles that don't have a rig.
@@ -98,7 +99,7 @@ var TownLevelRoles = []string{"mayor", "deacon"}
 var TownLevelNamedRoles = []string{"dog"}
 
 // RigLevelRoles are agent roles that have a rig but no name.
-var RigLevelRoles = []string{"witness", "refinery"}
+var RigLevelRoles = []string{"witness", "refinery", "architect"}
 
 // NamedRoles are agent roles that include a worker name (rig-level).
 var NamedRoles = []string{"crew", "polecat"}
