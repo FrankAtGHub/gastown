@@ -82,6 +82,12 @@ func runStatusLine(cmd *cobra.Command, args []string) error {
 		return runRefineryStatusLine(t, rigName)
 	}
 
+	// Architect status line (minimal — on-demand agent)
+	if role == "architect" || strings.HasSuffix(statusLineSession, "-architect") {
+		fmt.Printf("%s %s/architect", AgentTypeIcons[AgentArchitect], rigName)
+		return nil
+	}
+
 	// Crew/Polecat status line
 	return runWorkerStatusLine(t, statusLineSession, rigName, polecat, crew, issue)
 }

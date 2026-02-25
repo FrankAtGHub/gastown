@@ -28,6 +28,7 @@ const (
 	AgentRefinery
 	AgentCrew
 	AgentPolecat
+	AgentArchitect
 )
 
 // AgentSession represents a categorized tmux session.
@@ -44,8 +45,9 @@ var AgentTypeColors = map[AgentType]string{
 	AgentDeacon:   "#[fg=yellow,bold]",
 	AgentWitness:  "#[fg=cyan]",
 	AgentRefinery: "#[fg=blue]",
-	AgentCrew:     "#[fg=green]",
-	AgentPolecat:  "#[fg=white,dim]",
+	AgentCrew:      "#[fg=green]",
+	AgentPolecat:   "#[fg=white,dim]",
+	AgentArchitect: "#[fg=magenta,bold]",
 }
 
 // AgentTypeIcons maps agent types to display icons.
@@ -55,8 +57,9 @@ var AgentTypeIcons = map[AgentType]string{
 	AgentDeacon:   constants.EmojiDeacon,
 	AgentWitness:  constants.EmojiWitness,
 	AgentRefinery: constants.EmojiRefinery,
-	AgentCrew:     constants.EmojiCrew,
-	AgentPolecat:  constants.EmojiPolecat,
+	AgentCrew:      constants.EmojiCrew,
+	AgentPolecat:   constants.EmojiPolecat,
+	AgentArchitect: constants.EmojiArchitect,
 }
 
 var agentsCmd = &cobra.Command{
@@ -151,6 +154,8 @@ func categorizeSession(name string) *AgentSession {
 		sess.Type = AgentCrew
 	case session.RolePolecat:
 		sess.Type = AgentPolecat
+	case session.RoleArchitect:
+		sess.Type = AgentArchitect
 	default:
 		return nil
 	}
@@ -201,12 +206,13 @@ func getAgentSessions(includePolecats bool) ([]*AgentSession, error) {
 			return a.Rig < b.Rig
 		}
 
-		// Within rig: refinery, witness, crew, polecat
+		// Within rig: refinery, witness, architect, crew, polecat
 		typeOrder := map[AgentType]int{
-			AgentRefinery: 0,
-			AgentWitness:  1,
-			AgentCrew:     2,
-			AgentPolecat:  3,
+			AgentRefinery:  0,
+			AgentWitness:   1,
+			AgentArchitect: 2,
+			AgentCrew:      3,
+			AgentPolecat:   4,
 		}
 		if typeOrder[a.Type] != typeOrder[b.Type] {
 			return typeOrder[a.Type] < typeOrder[b.Type]
@@ -237,6 +243,8 @@ func (a *AgentSession) displayLabel() string {
 		return fmt.Sprintf("%s%s %s/crew/%s#[default]", color, icon, a.Rig, a.AgentName)
 	case AgentPolecat:
 		return fmt.Sprintf("%s%s %s/%s#[default]", color, icon, a.Rig, a.AgentName)
+	case AgentArchitect:
+		return fmt.Sprintf("%s%s %s/architect#[default]", color, icon, a.Rig)
 	}
 	return a.Name
 }
@@ -348,6 +356,8 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  %s crew/%s\n", icon, agent.AgentName)
 		case AgentPolecat:
 			fmt.Printf("  %s %s\n", icon, agent.AgentName)
+		case AgentArchitect:
+			fmt.Printf("  %s architect\n", icon)
 		}
 	}
 

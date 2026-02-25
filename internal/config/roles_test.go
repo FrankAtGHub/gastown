@@ -117,18 +117,19 @@ func TestLoadRoleDefinition_UnknownRole(t *testing.T) {
 
 func TestAllRoles(t *testing.T) {
 	roles := AllRoles()
-	if len(roles) != 7 {
-		t.Errorf("AllRoles() returned %d roles, want 7", len(roles))
+	if len(roles) != 8 {
+		t.Errorf("AllRoles() returned %d roles, want 8", len(roles))
 	}
 
 	expected := map[string]bool{
-		"mayor":    true,
-		"deacon":   true,
-		"dog":      true,
-		"witness":  true,
-		"refinery": true,
-		"polecat":  true,
-		"crew":     true,
+		"mayor":     true,
+		"deacon":    true,
+		"dog":       true,
+		"witness":   true,
+		"refinery":  true,
+		"polecat":   true,
+		"crew":      true,
+		"architect": true,
 	}
 
 	for _, r := range roles {
@@ -157,8 +158,8 @@ func TestTownRoles(t *testing.T) {
 
 func TestRigRoles(t *testing.T) {
 	roles := RigRoles()
-	if len(roles) != 4 {
-		t.Errorf("RigRoles() returned %d roles, want 4", len(roles))
+	if len(roles) != 5 {
+		t.Errorf("RigRoles() returned %d roles, want 5", len(roles))
 	}
 
 	for _, r := range roles {

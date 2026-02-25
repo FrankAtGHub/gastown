@@ -14,8 +14,9 @@ const (
 	RoleDeacon   Role = "deacon"
 	RoleWitness  Role = "witness"
 	RoleRefinery Role = "refinery"
-	RoleCrew     Role = "crew"
-	RolePolecat  Role = "polecat"
+	RoleCrew      Role = "crew"
+	RolePolecat   Role = "polecat"
+	RoleArchitect Role = "architect"
 )
 
 // AgentIdentity represents a parsed Gas Town agent identity.
@@ -57,6 +58,8 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 			return &AgentIdentity{Role: RoleWitness, Rig: rig}, nil
 		case "refinery":
 			return &AgentIdentity{Role: RoleRefinery, Rig: rig}, nil
+		case "architect":
+			return &AgentIdentity{Role: RoleArchitect, Rig: rig}, nil
 		case "crew", "polecats":
 			return nil, fmt.Errorf("invalid address %q", address)
 		default:
@@ -125,7 +128,7 @@ func ParseSessionName(session string) (*AgentIdentity, error) {
 		return nil, fmt.Errorf("invalid session name %q: expected rig-role format", session)
 	}
 
-	// Check for witness/refinery (suffix markers)
+	// Check for witness/refinery/architect (suffix markers)
 	if parts[len(parts)-1] == "witness" {
 		rig := strings.Join(parts[:len(parts)-1], "-")
 		return &AgentIdentity{Role: RoleWitness, Rig: rig}, nil
@@ -133,6 +136,10 @@ func ParseSessionName(session string) (*AgentIdentity, error) {
 	if parts[len(parts)-1] == "refinery" {
 		rig := strings.Join(parts[:len(parts)-1], "-")
 		return &AgentIdentity{Role: RoleRefinery, Rig: rig}, nil
+	}
+	if parts[len(parts)-1] == "architect" {
+		rig := strings.Join(parts[:len(parts)-1], "-")
+		return &AgentIdentity{Role: RoleArchitect, Rig: rig}, nil
 	}
 
 	// Check for crew (marker in middle)
@@ -182,6 +189,8 @@ func (a *AgentIdentity) SessionName() string {
 		return CrewSessionName(a.Rig, a.Name)
 	case RolePolecat:
 		return PolecatSessionName(a.Rig, a.Name)
+	case RoleArchitect:
+		return ArchitectSessionName(a.Rig)
 	default:
 		return ""
 	}
@@ -193,6 +202,7 @@ func (a *AgentIdentity) SessionName() string {
 //   - deacon → "deacon"
 //   - witness → "gastown/witness"
 //   - refinery → "gastown/refinery"
+//   - architect → "gastown/architect"
 //   - crew → "gastown/crew/max"
 //   - polecat → "gastown/polecats/Toast"
 func (a *AgentIdentity) Address() string {
@@ -205,6 +215,8 @@ func (a *AgentIdentity) Address() string {
 		return fmt.Sprintf("%s/witness", a.Rig)
 	case RoleRefinery:
 		return fmt.Sprintf("%s/refinery", a.Rig)
+	case RoleArchitect:
+		return fmt.Sprintf("%s/architect", a.Rig)
 	case RoleCrew:
 		return fmt.Sprintf("%s/crew/%s", a.Rig, a.Name)
 	case RolePolecat:

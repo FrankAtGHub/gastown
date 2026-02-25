@@ -45,6 +45,7 @@ var beadsExemptCommands = map[string]bool{
 	"polecat":    true,
 	"witness":    true,
 	"refinery":   true,
+	"architect":  true,
 	"status":     true,
 	"mail":       true,
 	"hook":       true,
