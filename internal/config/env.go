@@ -128,6 +128,12 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 			env["BD_ACTOR"] = "dog"
 			env["GIT_AUTHOR_NAME"] = "dog"
 		}
+
+	case "architect":
+		env["GT_ROLE"] = fmt.Sprintf("%s/architect", cfg.Rig)
+		env["GT_RIG"] = cfg.Rig
+		env["BD_ACTOR"] = fmt.Sprintf("%s/architect", cfg.Rig)
+		env["GIT_AUTHOR_NAME"] = fmt.Sprintf("%s/architect", cfg.Rig)
 	}
 
 	// Only set GT_ROOT if provided

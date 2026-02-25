@@ -28,6 +28,7 @@ const (
 	AgentRefinery
 	AgentCrew
 	AgentPolecat
+	AgentArchitect
 	AgentPersonal // Non-GT session (user's terminal session)
 	AgentTest     // Session on a gt-test-* socket (integration tests)
 )
@@ -47,18 +48,20 @@ var AgentTypeColors = map[AgentType]string{
 	AgentDeacon:   "#[fg=yellow,bold]",
 	AgentWitness:  "#[fg=cyan]",
 	AgentRefinery: "#[fg=blue]",
-	AgentCrew:     "#[fg=green]",
-	AgentPolecat:  "#[fg=white,dim]",
-	AgentPersonal: "#[fg=magenta]",
-	AgentTest:     "#[fg=yellow,dim]",
+	AgentCrew:      "#[fg=green]",
+	AgentPolecat:   "#[fg=white,dim]",
+	AgentArchitect: "#[fg=magenta,bold]",
+	AgentPersonal:  "#[fg=magenta]",
+	AgentTest:      "#[fg=yellow,dim]",
 }
 
 // rigTypeOrder defines the display order of rig-level agent types.
 var rigTypeOrder = map[AgentType]int{
-	AgentRefinery: 0,
-	AgentWitness:  1,
-	AgentCrew:     2,
-	AgentPolecat:  3,
+	AgentRefinery:  0,
+	AgentWitness:   1,
+	AgentArchitect: 2,
+	AgentCrew:      3,
+	AgentPolecat:   4,
 }
 
 // AgentTypeIcons maps agent types to display icons.
@@ -68,8 +71,9 @@ var AgentTypeIcons = map[AgentType]string{
 	AgentDeacon:   constants.EmojiDeacon,
 	AgentWitness:  constants.EmojiWitness,
 	AgentRefinery: constants.EmojiRefinery,
-	AgentCrew:     constants.EmojiCrew,
-	AgentPolecat:  constants.EmojiPolecat,
+	AgentCrew:      constants.EmojiCrew,
+	AgentPolecat:   constants.EmojiPolecat,
+	AgentArchitect: constants.EmojiArchitect,
 }
 
 var agentsCmd = &cobra.Command{
@@ -172,6 +176,8 @@ func categorizeSession(name string) *AgentSession {
 		sess.Type = AgentCrew
 	case session.RolePolecat:
 		sess.Type = AgentPolecat
+	case session.RoleArchitect:
+		sess.Type = AgentArchitect
 	case session.RoleOverseer:
 		return nil // overseer is the human operator, not a display agent
 	default:
@@ -347,7 +353,7 @@ func filterAndSortSessions(sessionNames []string, includePolecats bool) []*Agent
 			return a.Rig < b.Rig
 		}
 
-		// Within rig: refinery, witness, crew, polecat
+		// Within rig: refinery, witness, architect, crew, polecat
 		if rigTypeOrder[a.Type] != rigTypeOrder[b.Type] {
 			return rigTypeOrder[a.Type] < rigTypeOrder[b.Type]
 		}
@@ -388,6 +394,8 @@ func (a *AgentSession) displayLabel() string {
 		return fmt.Sprintf("%s%s %s/crew/%s#[default]", color, icon, a.Rig, a.AgentName)
 	case AgentPolecat:
 		return fmt.Sprintf("%s%s %s/%s#[default]", color, icon, a.Rig, a.AgentName)
+	case AgentArchitect:
+		return fmt.Sprintf("%s%s %s/architect#[default]", color, icon, a.Rig)
 	case AgentPersonal:
 		return fmt.Sprintf("%s%s#[default]", color, a.Name)
 	case AgentTest:
@@ -573,6 +581,8 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  %s crew/%s\n", icon, agent.AgentName)
 		case AgentPolecat:
 			fmt.Printf("  %s %s\n", icon, agent.AgentName)
+		case AgentArchitect:
+			fmt.Printf("  %s architect\n", icon)
 		}
 	}
 

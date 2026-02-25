@@ -1,0 +1,23 @@
+# Architect role definition
+# Per-rig independent quality authority. On-demand activation, persistent session.
+
+role = "architect"
+scope = "rig"
+nudge = "Check mail for review requests, then act accordingly."
+prompt_template = "architect.md.tmpl"
+
+[session]
+pattern = "gt-{rig}-architect"
+work_dir = "{town}/{rig}"
+needs_pre_sync = false
+start_command = "exec claude --dangerously-skip-permissions"
+
+[env]
+GT_ROLE = "architect"
+GT_SCOPE = "rig"
+
+[health]
+ping_timeout = "30s"
+consecutive_failures = 3
+kill_cooldown = "5m"
+stuck_threshold = "2h"

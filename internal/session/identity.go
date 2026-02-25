@@ -15,8 +15,9 @@ const (
 	RoleOverseer Role = "overseer"
 	RoleWitness  Role = "witness"
 	RoleRefinery Role = "refinery"
-	RoleCrew     Role = "crew"
-	RolePolecat  Role = "polecat"
+	RoleCrew      Role = "crew"
+	RolePolecat   Role = "polecat"
+	RoleArchitect Role = "architect"
 )
 
 // AgentIdentity represents a parsed Gas Town agent identity.
@@ -60,6 +61,8 @@ func ParseAddress(address string) (*AgentIdentity, error) {
 			return &AgentIdentity{Role: RoleWitness, Rig: rig, Prefix: prefix}, nil
 		case string(RoleRefinery):
 			return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, nil
+		case string(RoleArchitect):
+			return &AgentIdentity{Role: RoleArchitect, Rig: rig, Prefix: prefix}, nil
 		case string(RoleCrew), "polecats":
 			return nil, fmt.Errorf("invalid address %q", address)
 		default:
@@ -143,6 +146,11 @@ func ParseSessionNameWithRegistry(session string, registry *PrefixRegistry) (*Ag
 		return &AgentIdentity{Role: RoleRefinery, Rig: rig, Prefix: prefix}, nil
 	}
 
+	// Check for architect (suffix marker)
+	if rest == string(RoleArchitect) {
+		return &AgentIdentity{Role: RoleArchitect, Rig: rig, Prefix: prefix}, nil
+	}
+
 	// Check for crew (marker in rest)
 	if strings.HasPrefix(rest, "crew-") {
 		name := rest[5:] // len("crew-") = 5
@@ -221,6 +229,8 @@ func (a *AgentIdentity) BeaconAddress() string {
 		return BeaconRecipient("crew", a.Name, a.Rig)
 	case RolePolecat:
 		return BeaconRecipient("polecat", a.Name, a.Rig)
+	case RoleArchitect:
+		return BeaconRecipient("architect", "", a.Rig)
 	default:
 		return ""
 	}
@@ -232,6 +242,7 @@ func (a *AgentIdentity) BeaconAddress() string {
 //   - deacon → "deacon"
 //   - witness → "gastown/witness"
 //   - refinery → "gastown/refinery"
+//   - architect → "gastown/architect"
 //   - crew → "gastown/crew/max"
 //   - polecat → "gastown/polecats/Toast"
 func (a *AgentIdentity) Address() string {
@@ -246,6 +257,8 @@ func (a *AgentIdentity) Address() string {
 		return fmt.Sprintf("%s/witness", a.Rig)
 	case RoleRefinery:
 		return fmt.Sprintf("%s/refinery", a.Rig)
+	case RoleArchitect:
+		return fmt.Sprintf("%s/architect", a.Rig)
 	case RoleCrew:
 		return fmt.Sprintf("%s/crew/%s", a.Rig, a.Name)
 	case RolePolecat:
