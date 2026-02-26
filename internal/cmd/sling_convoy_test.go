@@ -29,7 +29,7 @@ echo '[{"id":"gt-abc123"}]'
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
 
-	if !convoyTracksBead(beadsDir, "hq-cv-test1", "gt-abc123") {
+	if !convoyTracksBead(beadsDir, "gt-cv-test1", "gt-abc123") {
 		t.Error("convoyTracksBead should return true for exact match")
 	}
 }
@@ -56,7 +56,7 @@ echo '[{"id":"external:gt-abc:gt-abc123"}]'
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
 
-	if !convoyTracksBead(beadsDir, "hq-cv-test2", "gt-abc123") {
+	if !convoyTracksBead(beadsDir, "gt-cv-test2", "gt-abc123") {
 		t.Error("convoyTracksBead should return true for external ref match")
 	}
 }
@@ -83,7 +83,7 @@ echo '[{"id":"gt-other456"}]'
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
 
-	if convoyTracksBead(beadsDir, "hq-cv-test3", "gt-abc123") {
+	if convoyTracksBead(beadsDir, "gt-cv-test3", "gt-abc123") {
 		t.Error("convoyTracksBead should return false when bead not tracked")
 	}
 }
@@ -110,7 +110,7 @@ echo '[]'
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
 
-	if convoyTracksBead(beadsDir, "hq-cv-test4", "gt-abc123") {
+	if convoyTracksBead(beadsDir, "gt-cv-test4", "gt-abc123") {
 		t.Error("convoyTracksBead should return false for empty deps")
 	}
 }
@@ -137,7 +137,7 @@ echo '[{"id":"gt-other1"},{"id":"external:gt-abc:gt-abc123"},{"id":"gt-other2"}]
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+":"+origPath)
 
-	if !convoyTracksBead(beadsDir, "hq-cv-test5", "gt-abc123") {
+	if !convoyTracksBead(beadsDir, "gt-cv-test5", "gt-abc123") {
 		t.Error("convoyTracksBead should return true when bead found among multiple deps")
 	}
 }

@@ -189,8 +189,12 @@ func runSynthesisStart(cmd *cobra.Command, args []string) error {
 		reviewID = meta.ReviewID
 	}
 	if reviewID == "" {
-		// Extract from convoy ID
-		reviewID = strings.TrimPrefix(convoyID, "hq-cv-")
+		// Extract short ID from convoy ID by stripping the rig prefix + "cv-"
+		// e.g., "co-cv-abc12" → "abc12", "hq-cv-xyz" → "xyz"
+		reviewID = convoyID
+		if idx := strings.Index(convoyID, "-cv-"); idx >= 0 {
+			reviewID = convoyID[idx+4:]
+		}
 	}
 
 	// Determine target rig
@@ -559,7 +563,8 @@ func createSynthesisBead(convoyID string, meta *ConvoyMeta, f *formula.Formula,
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		// Try to extract ID from non-JSON output
 		out := strings.TrimSpace(stdout.String())
-		if strings.HasPrefix(out, "hq-") || strings.HasPrefix(out, "gt-") {
+		// Accept any bead-ID-shaped output (prefix-rest)
+		if idx := strings.Index(out, "-"); idx > 0 && idx < len(out)-1 {
 			return out, nil
 		}
 		return "", fmt.Errorf("parsing created bead: %w", err)
@@ -664,7 +669,11 @@ func TriggerSynthesisIfReady(convoyID, targetRig string) error {
 	legOutputs, _, _ := collectLegOutputs(meta, f)
 	reviewID := meta.ReviewID
 	if reviewID == "" {
-		reviewID = strings.TrimPrefix(convoyID, "hq-cv-")
+		// Extract short ID from convoy ID by stripping the rig prefix + "cv-"
+		reviewID = convoyID
+		if idx := strings.Index(convoyID, "-cv-"); idx >= 0 {
+			reviewID = convoyID[idx+4:]
+		}
 	}
 
 	synthesisID, err := createSynthesisBead(convoyID, meta, f, legOutputs, reviewID)

@@ -294,12 +294,16 @@ func init() {
 }
 
 // getTownBeadsDir returns the path to town-level beads directory.
+// getTownBeadsDir returns the town root directory for running bd commands.
+// bd finds .beads/ from CWD and uses routes.jsonl for prefix-based routing.
+// Previously returned townRoot/.beads, now returns townRoot directly so that
+// rig-level convoy beads (e.g., co-cv-*) resolve via routing.
 func getTownBeadsDir() (string, error) {
 	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
 		return "", fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-	return filepath.Join(townRoot, ".beads"), nil
+	return townRoot, nil
 }
 
 func runConvoyCreate(cmd *cobra.Command, args []string) error {
@@ -340,7 +344,7 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 
 	// Ensure custom types (including 'convoy') are registered in town beads.
 	// This handles cases where install didn't complete or beads was initialized manually.
-	if err := beads.EnsureCustomTypes(townBeads); err != nil {
+	if err := beads.EnsureCustomTypes(filepath.Join(townBeads, ".beads")); err != nil {
 		return fmt.Errorf("ensuring custom types: %w", err)
 	}
 
@@ -365,8 +369,10 @@ func runConvoyCreate(cmd *cobra.Command, args []string) error {
 		description += fmt.Sprintf("\nMolecule: %s", convoyMolecule)
 	}
 
-	// Generate convoy ID with cv- prefix
-	convoyID := fmt.Sprintf("hq-cv-%s", generateShortID())
+	// Generate convoy ID with rig prefix (e.g., co-cv-xxxxx)
+	// Derive prefix from tracked issues — convoys live in the same rig as their tracked work
+	prefix := beads.ExtractPrefix(trackedIssues[0]) // e.g., "co-"
+	convoyID := fmt.Sprintf("%scv-%s", prefix, generateShortID())
 
 	createArgs := []string{
 		"create",
@@ -1097,7 +1103,7 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 // notifyMayorSession pushes a convoy completion notification into the active
 // Mayor session via nudge, if convoy.notify_on_complete is enabled.
 func notifyMayorSession(townBeads, convoyID, title string) {
-	townRoot := filepath.Dir(townBeads) // townBeads = townRoot/.beads
+	townRoot := townBeads // townBeads is now the town root directory
 	settingsPath := config.TownSettingsPath(townRoot)
 	settings, err := config.LoadOrCreateTownSettings(settingsPath)
 	if err != nil {
@@ -1548,8 +1554,8 @@ func applyFreshIssueDetails(dep *trackedDependency, details *issueDetails) {
 // Returns issue details including status, type, and worker info.
 func getTrackedIssues(townBeads, convoyID string) ([]trackedIssueInfo, error) {
 	// Use bd dep list to get tracked dependencies
-	// Run from town root (parent of .beads) so bd routes correctly
-	townRoot := filepath.Dir(townBeads)
+	// Run from town root so bd routes correctly via routes.jsonl
+	townRoot := townBeads // townBeads is now the town root directory
 	depCmd := exec.Command("bd", "dep", "list", convoyID, "--direction=down", "--type=tracks", "--json")
 	depCmd.Dir = townRoot
 
@@ -1652,8 +1658,8 @@ func (issue issueDetailsJSON) toIssueDetails() *issueDetails {
 // rigName: name of the rig (e.g., "claycantrell")
 // issueID: the issue ID to look up
 func getExternalIssueDetails(townBeads, rigName, issueID string) *issueDetails {
-	// Resolve rig directory path: town parent + rig name
-	townParent := filepath.Dir(townBeads)
+	// Resolve rig directory path: townBeads is now the town root directory
+	townParent := townBeads
 	rigDir := filepath.Join(townParent, rigName)
 
 	// Check if rig directory exists

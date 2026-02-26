@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -61,11 +60,9 @@ func isTrackedByConvoy(beadID string) string {
 // (for manually-created convoys where the description won't match).
 // Returns convoy ID if found, empty string otherwise.
 func findConvoyByDescription(townRoot, beadID string) string {
-	townBeads := filepath.Join(townRoot, ".beads")
-
-	// Query all open convoys from HQ
+	// Run bd from townRoot — it finds .beads/ and uses routes.jsonl for prefix routing
 	listCmd := exec.Command("bd", "list", "--type=convoy", "--status=open", "--json")
-	listCmd.Dir = townBeads
+	listCmd.Dir = townRoot
 
 	out, err := listCmd.Output()
 	if err != nil {
@@ -93,7 +90,7 @@ func findConvoyByDescription(townRoot, beadID string) string {
 	// This handles the case where cross-rig dep resolution (direction=up) fails
 	// but the convoy does have a tracks dependency on the bead.
 	for _, convoy := range convoys {
-		if convoyTracksBead(townBeads, convoy.ID, beadID) {
+		if convoyTracksBead(townRoot, convoy.ID, beadID) {
 			return convoy.ID
 		}
 	}
@@ -103,9 +100,9 @@ func findConvoyByDescription(townRoot, beadID string) string {
 
 // convoyTracksBead checks if a convoy has a tracks dependency on the given beadID.
 // Handles both raw bead IDs and external-formatted references (e.g., "external:gt-mol:gt-mol-xyz").
-func convoyTracksBead(beadsDir, convoyID, beadID string) bool {
+func convoyTracksBead(workDir, convoyID, beadID string) bool {
 	depCmd := exec.Command("bd", "dep", "list", convoyID, "--direction=down", "--type=tracks", "--json")
-	depCmd.Dir = beadsDir
+	depCmd.Dir = workDir
 
 	out, err := depCmd.Output()
 	if err != nil {
@@ -151,11 +148,10 @@ func createAutoConvoy(beadID, beadTitle string, owned bool, mergeStrategy string
 		return "", fmt.Errorf("finding town root: %w", err)
 	}
 
-	townBeads := filepath.Join(townRoot, ".beads")
-
-	// Generate convoy ID with hq-cv- prefix for visual distinction
-	// The hq-cv- prefix is registered in routes during gt install
-	convoyID := fmt.Sprintf("hq-cv-%s", slingGenerateShortID())
+	// Generate convoy ID with rig prefix (e.g., co-cv-xxxxx) instead of hq-cv-
+	// The rig prefix is extracted from the tracked bead ID and routes.jsonl handles resolution
+	prefix := beads.ExtractPrefix(beadID) // e.g., "co-"
+	convoyID := fmt.Sprintf("%scv-%s", prefix, slingGenerateShortID())
 
 	// Create convoy with title "Work: <issue-title>"
 	convoyTitle := fmt.Sprintf("Work: %s", beadTitle)
@@ -179,7 +175,7 @@ func createAutoConvoy(beadID, beadTitle string, owned bool, mergeStrategy string
 	}
 
 	createCmd := exec.Command("bd", createArgs...)
-	createCmd.Dir = townBeads
+	createCmd.Dir = townRoot
 	createCmd.Stderr = os.Stderr
 
 	if err := createCmd.Run(); err != nil {

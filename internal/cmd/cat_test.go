@@ -16,8 +16,9 @@ func TestIsBeadID(t *testing.T) {
 		{"dolt-qux", true},
 		{"sky-abc", true},
 		{"wy-def", true},
-		// Multi-segment prefixes
+		// Multi-segment prefixes (legacy and rig-level convoys)
 		{"hq-cv-foo", true},
+		{"co-cv-bar", true},
 		// Invalid inputs
 		{"", false},
 		{"-abc", false},

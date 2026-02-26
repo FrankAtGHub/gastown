@@ -512,8 +512,9 @@ func TestSlingCrossRigRoutingResolution(t *testing.T) {
 		expectedPath string // Relative to townRoot, or "." for town-level
 	}{
 		{"gt-mol-abc", "gastown/mayor/rig"},
+		{"gt-cv-abc", "gastown/mayor/rig"}, // Rig-level convoy (new pattern)
 		{"tr-task-xyz", "testrig/mayor/rig"},
-		{"hq-cv-123", "."}, // Town-level beads
+		{"hq-cv-123", "."}, // Town-level beads (legacy convoy prefix, still routes)
 	}
 
 	for _, tc := range tests {

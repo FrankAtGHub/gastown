@@ -77,7 +77,7 @@ func TestLegOutput(t *testing.T) {
 func TestConvoyMeta(t *testing.T) {
 	// Test ConvoyMeta struct
 	meta := ConvoyMeta{
-		ID:        "hq-cv-abc",
+		ID:        "co-cv-abc",
 		Title:     "Code Review: PR #123",
 		Status:    "open",
 		Formula:   "code-review",
@@ -85,8 +85,8 @@ func TestConvoyMeta(t *testing.T) {
 		LegIssues: []string{"gt-leg1", "gt-leg2", "gt-leg3"},
 	}
 
-	if meta.ID != "hq-cv-abc" {
-		t.Errorf("ID = %q, want %q", meta.ID, "hq-cv-abc")
+	if meta.ID != "co-cv-abc" {
+		t.Errorf("ID = %q, want %q", meta.ID, "co-cv-abc")
 	}
 
 	if len(meta.LegIssues) != 3 {
