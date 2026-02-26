@@ -1467,6 +1467,9 @@ func GetActiveConnectionCount(townRoot string) (int, error) {
 // Returns false with error if the connection count cannot be determined — fail closed
 // to prevent connection storms that cause read-only mode (gt-lfc0d).
 func HasConnectionCapacity(townRoot string) (bool, int, error) {
+	if !hasDoltData(townRoot) {
+		return true, 0, nil // Dolt not configured, assume capacity available
+	}
 	config := DefaultConfig(townRoot)
 	maxConn := config.MaxConnections
 	if maxConn <= 0 {
@@ -1895,11 +1898,21 @@ func PolecatBranchName(polecatName string) string {
 	return fmt.Sprintf("polecat-%s-%d", strings.ToLower(polecatName), time.Now().Unix())
 }
 
+// hasDoltData checks if the .dolt-data directory exists in the town root.
+// Returns false when dolt is not set up, allowing callers to skip gracefully.
+func hasDoltData(townRoot string) bool {
+	_, err := os.Stat(filepath.Join(townRoot, ".dolt-data"))
+	return err == nil
+}
+
 // CreatePolecatBranch creates a Dolt branch for a polecat's isolated writes.
 // Each polecat gets its own branch to eliminate optimistic lock contention.
 // Retries with exponential backoff on transient errors (read-only, manifest lock, etc).
 // If read-only errors persist after retries, attempts server recovery (gt-chx92).
 func CreatePolecatBranch(townRoot, rigDB, branchName string) error {
+	if !hasDoltData(townRoot) {
+		return nil // Dolt not configured, skip
+	}
 	if err := validateBranchName(branchName); err != nil {
 		return fmt.Errorf("creating Dolt branch in %s: %w", rigDB, err)
 	}
@@ -1921,6 +1934,9 @@ func CreatePolecatBranch(townRoot, rigDB, branchName string) error {
 // polecat A's writes. This is benign because beads are keyed by unique ID, so
 // duplicate data across branches merges cleanly.
 func CommitServerWorkingSet(townRoot, rigDB, message string) error {
+	if !hasDoltData(townRoot) {
+		return nil // Dolt not configured, skip
+	}
 	if err := doltSQLWithRecovery(townRoot, rigDB, "CALL DOLT_ADD('-A')"); err != nil {
 		return fmt.Errorf("staging working set in %s: %w", rigDB, err)
 	}
@@ -2062,6 +2078,9 @@ func doltSQLScriptWithRetry(townRoot, script string) error {
 // DeletePolecatBranch deletes a polecat's Dolt branch (cleanup/nuke).
 // Best-effort: logs warning if branch doesn't exist or deletion fails.
 func DeletePolecatBranch(townRoot, rigDB, branchName string) {
+	if !hasDoltData(townRoot) {
+		return // Dolt not configured, skip
+	}
 	if err := validateBranchName(branchName); err != nil {
 		fmt.Printf("Warning: invalid Dolt branch name %q: %v\n", branchName, err)
 		return

@@ -255,6 +255,12 @@ func (m *Manager) CheckDoltServerCapacity() error {
 		return nil // Can't determine town root, skip check
 	}
 
+	// Skip check entirely when dolt is not set up (no .dolt-data directory)
+	doltDataDir := filepath.Join(townRoot, ".dolt-data")
+	if _, err := os.Stat(doltDataDir); os.IsNotExist(err) {
+		return nil
+	}
+
 	hasCapacity, active, err := doltserver.HasConnectionCapacity(townRoot)
 	if err != nil {
 		// Fail closed: if we can't check capacity, the server may be overloaded.
