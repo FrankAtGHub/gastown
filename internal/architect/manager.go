@@ -159,6 +159,11 @@ func (m *Manager) Start(agentOverride string, envOverrides []string) error {
 		return fmt.Errorf("waiting for architect to start: %w", err)
 	}
 
+	// Accept folder trust prompt if it appears (new/untrusted directories)
+	if err := t.AcceptFolderTrustPrompt(sessionID); err != nil {
+		log.Printf("warning: accepting folder trust for %s: %v", sessionID, err)
+	}
+
 	// Accept bypass permissions warning dialog if it appears
 	if err := t.AcceptBypassPermissionsWarning(sessionID); err != nil {
 		log.Printf("warning: accepting bypass permissions for %s: %v", sessionID, err)

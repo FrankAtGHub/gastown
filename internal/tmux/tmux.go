@@ -1037,6 +1037,34 @@ func (t *Tmux) NudgePane(pane, message string) error {
 //
 // Call this after starting Claude and waiting for it to initialize (WaitForCommand),
 // but before sending any prompts.
+// AcceptFolderTrustPrompt dismisses the Claude Code folder trust dialog.
+// When Claude starts in a new/untrusted directory, it shows a trust prompt:
+// "Yes, I trust this folder" / "No, exit". Option 1 is already selected by default.
+// This function detects the prompt and presses Enter to accept.
+func (t *Tmux) AcceptFolderTrustPrompt(session string) error {
+	// Wait for the dialog to potentially render
+	time.Sleep(1 * time.Second)
+
+	content, err := t.CapturePane(session, 30)
+	if err != nil {
+		return err
+	}
+
+	// Look for the characteristic trust prompt text
+	if !strings.Contains(content, "trust this folder") && !strings.Contains(content, "I trust this") {
+		return nil // Trust prompt not present
+	}
+
+	// "Yes, I trust this folder" is option 1 (already selected by default)
+	if _, err := t.run("send-keys", "-t", session, "Enter"); err != nil {
+		return err
+	}
+
+	// Wait for Claude to proceed past the trust dialog
+	time.Sleep(1 * time.Second)
+	return nil
+}
+
 func (t *Tmux) AcceptBypassPermissionsWarning(session string) error {
 	// Wait for the dialog to potentially render
 	time.Sleep(1 * time.Second)

@@ -314,6 +314,9 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	// Wait for Claude to start (non-fatal)
 	debugSession("WaitForCommand", m.tmux.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout))
 
+	// Accept folder trust prompt if it appears (new worktree paths are untrusted)
+	debugSession("AcceptFolderTrustPrompt", m.tmux.AcceptFolderTrustPrompt(sessionID))
+
 	// Accept bypass permissions warning dialog if it appears
 	debugSession("AcceptBypassPermissionsWarning", m.tmux.AcceptBypassPermissionsWarning(sessionID))
 
