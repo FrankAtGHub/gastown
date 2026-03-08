@@ -1,0 +1,17 @@
+{
+  "wave": 156,
+  "title": "Theme Standardizer Phase 3 — Docs App Integration",
+  "description": "Wire @field-ops/theme into apps/docs/ with fo-* Tailwind tokens and CSS custom properties, matching the Wave 153 pattern for apps/web/",
+  "files": [
+    "apps/docs/tailwind.config.ts",
+    "apps/docs/app/global.css",
+    "apps/docs/package.json",
+    "apps/docs/Dockerfile"
+  ],
+  "test_files": [
+    "automatron/waves/wave-156/tests/wave-156-static.test.js",
+    "automatron/waves/wave-156/tests/wave-156-docs-theme.flow.cjs"
+  ],
+  "depends_on": [153, 155],
+  "phase": "implement"
+}

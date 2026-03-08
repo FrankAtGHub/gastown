@@ -1,0 +1,70 @@
+{
+  "wave": 156,
+  "timestamp": "2026-03-08T16:30:04.411Z",
+  "total": 15,
+  "passed": 15,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "tailwind.config.ts: imports fieldOpsColors from CJS bridge",
+      "status": "pass"
+    },
+    {
+      "name": "tailwind.config.ts: extends theme with fo namespace",
+      "status": "pass"
+    },
+    {
+      "name": "tailwind.config.ts: preserves fumadocs preset",
+      "status": "pass"
+    },
+    {
+      "name": "tailwind.config.ts: preserves brand colors",
+      "status": "pass"
+    },
+    {
+      "name": "tailwind.config.ts: preserves darkMode class",
+      "status": "pass"
+    },
+    {
+      "name": "global.css: has :root with --fo-* variables",
+      "status": "pass"
+    },
+    {
+      "name": "global.css: has .dark with --fo-* variables",
+      "status": "pass"
+    },
+    {
+      "name": "global.css: has 26 light CSS variables",
+      "status": "pass"
+    },
+    {
+      "name": "global.css: has 26 dark CSS variables",
+      "status": "pass"
+    },
+    {
+      "name": "global.css: preserves fumadocs style import",
+      "status": "pass"
+    },
+    {
+      "name": "global.css: preserves Tailwind directives",
+      "status": "pass"
+    },
+    {
+      "name": "package.json: has @field-ops/theme dependency",
+      "status": "pass"
+    },
+    {
+      "name": "Dockerfile: copies packages/theme",
+      "status": "pass"
+    },
+    {
+      "name": "Dockerfile: symlinks @field-ops/theme",
+      "status": "pass"
+    },
+    {
+      "name": "Dockerfile: preserves standalone output",
+      "status": "pass"
+    }
+  ]
+}
