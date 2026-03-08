@@ -93,17 +93,19 @@ async function runAPITests() {
   for (const tf of testFiles) {
     const testPath = path.join(FLOW_DIR, tf);
     try {
-      const output = execSync(`npx jest --no-coverage --forceExit "${testPath}"`, {
-        cwd: apiDir,
+      // Run as standalone Node script (these tests use their own test harness, not Jest)
+      const output = execSync(`node "${testPath}"`, {
         encoding: 'utf-8',
         timeout: 60000,
         env: { ...process.env, NODE_ENV: 'test' },
       });
-      const match = output.match(/Tests:\s+(\d+)\s+passed/);
+      const match = output.match(/(\d+)\/(\d+) tests passed/);
+      const passed = match ? parseInt(match[1], 10) : 0;
+      const total = match ? parseInt(match[2], 10) : 0;
       results.push({
         name: tf,
-        passed: true,
-        tests: match ? parseInt(match[1], 10) : 0,
+        passed: passed === total && total > 0,
+        tests: total,
         output: output.slice(-500),
       });
     } catch (err) {

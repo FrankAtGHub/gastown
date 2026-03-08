@@ -206,7 +206,7 @@
     {
       "check": "feature-flag-behavior",
       "description": "N/A — no feature flags in this wave",
-      "testFile": "N/A"
+      "testFile": ""
     }
   ],
   "externalDependencies": [],
