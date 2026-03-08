@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
+import { useThemeStyles } from '../theme';
 
 interface Document {
   id: string;
@@ -48,6 +49,7 @@ function buildSections(docs: Document[]) {
 }
 
 export default function DocumentsScreen({ navigation }: { navigation: any }) {
+  const { colors, isDark } = useThemeStyles();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -72,8 +74,8 @@ export default function DocumentsScreen({ navigation }: { navigation: any }) {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1e40af" />
+      <SafeAreaView style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </SafeAreaView>
     );
   }
@@ -83,24 +85,24 @@ export default function DocumentsScreen({ navigation }: { navigation: any }) {
 
   if (!hasDocuments) {
     return (
-      <SafeAreaView style={styles.emptyContainer}>
-        <View style={styles.emptyIconWrap}>
-          <Ionicons name="document-text-outline" size={48} color="#9ca3af" />
+      <SafeAreaView style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
+        <View style={[styles.emptyIconWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Ionicons name="document-text-outline" size={48} color={colors.textMuted} />
         </View>
-        <Text style={styles.emptyTitle}>No Documents Available</Text>
-        <Text style={styles.emptySubtitle}>
+        <Text style={[styles.emptyTitle, { color: colors.text }]}>No Documents Available</Text>
+        <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
           Your certifications, licenses, and safety documents will appear here once uploaded by your administrator.
         </Text>
 
-        <View style={styles.categoryList}>
+        <View style={[styles.categoryList, { backgroundColor: colors.card }]}>
           {sections.map(s => (
-            <View key={s.key} style={styles.categoryRow}>
-              <View style={styles.categoryIcon}>
-                <Ionicons name={s.icon as any} size={20} color="#6b7280" />
+            <View key={s.key} style={[styles.categoryRow, { borderBottomColor: colors.border }]}>
+              <View style={[styles.categoryIcon, { backgroundColor: colors.backgroundSecondary }]}>
+                <Ionicons name={s.icon as any} size={20} color={colors.textSecondary} />
               </View>
               <View style={styles.categoryText}>
-                <Text style={styles.categoryTitle}>{s.title}</Text>
-                <Text style={styles.categoryCount}>{s.data.length} documents</Text>
+                <Text style={[styles.categoryTitle, { color: colors.text }]}>{s.title}</Text>
+                <Text style={[styles.categoryCount, { color: colors.textMuted }]}>{s.data.length} documents</Text>
               </View>
             </View>
           ))}
@@ -110,23 +112,23 @@ export default function DocumentsScreen({ navigation }: { navigation: any }) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
     <SectionList
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       sections={sections}
       keyExtractor={(item, index) => item.id || String(index)}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       renderSectionHeader={({ section }) => (
-        <View style={styles.sectionHeader}>
-          <Ionicons name={section.icon as any} size={16} color="#6b7280" />
-          <Text style={styles.sectionTitle}>{section.title}</Text>
+        <View style={[styles.sectionHeader, { backgroundColor: colors.background }]}>
+          <Ionicons name={section.icon as any} size={16} color={colors.textSecondary} />
+          <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>{section.title}</Text>
         </View>
       )}
       renderItem={({ item }) => (
-        <View style={styles.docRow}>
-          <Text style={styles.docName}>{item.name}</Text>
+        <View style={[styles.docRow, { backgroundColor: colors.card, borderBottomColor: colors.border }]}>
+          <Text style={[styles.docName, { color: colors.text }]}>{item.name}</Text>
           {item.expiration_date && (
-            <Text style={styles.docExpiry}>Expires: {item.expiration_date}</Text>
+            <Text style={[styles.docExpiry, { color: colors.textMuted }]}>Expires: {item.expiration_date}</Text>
           )}
         </View>
       )}
@@ -136,40 +138,34 @@ export default function DocumentsScreen({ navigation }: { navigation: any }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f3f4f6' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6' },
-  emptyContainer: { flex: 1, backgroundColor: '#f3f4f6', alignItems: 'center', paddingTop: 60, paddingHorizontal: 32 },
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyContainer: { flex: 1, alignItems: 'center', paddingTop: 60, paddingHorizontal: 32 },
   emptyIconWrap: {
     width: 80, height: 80, borderRadius: 40,
-    backgroundColor: '#ffffff', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 2, borderColor: '#e5e7eb',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2,
   },
-  emptyTitle: { fontSize: 18, fontWeight: '600', color: '#374151', marginTop: 20 },
-  emptySubtitle: { fontSize: 14, color: '#6b7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
-  categoryList: {
-    width: '100%', marginTop: 32,
-    backgroundColor: '#ffffff', borderRadius: 12, overflow: 'hidden',
-  },
+  emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 20 },
+  emptySubtitle: { fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  categoryList: { width: '100%', marginTop: 32, borderRadius: 12, overflow: 'hidden' },
   categoryRow: {
     flexDirection: 'row', alignItems: 'center', padding: 16,
-    borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+    borderBottomWidth: 1,
   },
   categoryIcon: {
     width: 40, height: 40, borderRadius: 10,
-    backgroundColor: '#f3f4f6', justifyContent: 'center', alignItems: 'center', marginRight: 12,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
   categoryText: { flex: 1 },
-  categoryTitle: { fontSize: 15, fontWeight: '500', color: '#374151' },
-  categoryCount: { fontSize: 13, color: '#9ca3af', marginTop: 2 },
+  categoryTitle: { fontSize: 15, fontWeight: '500' },
+  categoryCount: { fontSize: 13, marginTop: 2 },
   sectionHeader: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#f3f4f6', paddingHorizontal: 16, paddingVertical: 10, paddingTop: 16,
+    paddingHorizontal: 16, paddingVertical: 10, paddingTop: 16,
   },
-  sectionTitle: { fontSize: 13, fontWeight: '600', color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 },
-  docRow: {
-    backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 14,
-    borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
-  },
-  docName: { fontSize: 15, color: '#111827' },
-  docExpiry: { fontSize: 12, color: '#9ca3af', marginTop: 4 },
+  sectionTitle: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+  docRow: { paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1 },
+  docName: { fontSize: 15 },
+  docExpiry: { fontSize: 12, marginTop: 4 },
 });

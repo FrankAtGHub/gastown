@@ -1,0 +1,176 @@
+{
+  "wave": 149,
+  "title": "Dark Theme Fix — Wave 148 Screens",
+  "description": "Replace all hardcoded light-mode colors in the 6 wave-148 mobile screens with useThemeStyles() from the existing theme system. Currently dark mode shows white/light screens because all colors are hardcoded (#f3f4f6, #ffffff, #111827, etc). The theme system (useThemeStyles hook, colors.ts) already provides dark/light variants — screens just need to use them. 106 hardcoded color values across 6 files.",
+  "date": "2026-03-08",
+  "phase": "plan",
+  "endpoints": [],
+  "routes": [],
+  "components": [],
+  "modifications": [
+    {
+      "file": "apps/mobile/src/screens/PersonalInfoScreen.tsx",
+      "description": "Replace 20 hardcoded color values with useThemeStyles() colors. Import useThemeStyles from '../theme'. Add const { colors, isDark, styles } = useThemeStyles(). Replace #f3f4f6→colors.background, #ffffff→colors.card, #111827→colors.text, #6b7280→colors.textSecondary, #1e40af→colors.primary, #e5e7eb→colors.border, #d1d5db→colors.inputBorder, #9ca3af→colors.placeholder.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/MyVehicleScreen.tsx",
+      "description": "Replace 17 hardcoded color values with useThemeStyles() colors. Same pattern as PersonalInfoScreen.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/TimeEntriesListScreen.tsx",
+      "description": "Replace 16 hardcoded color values with useThemeStyles() colors. Same pattern.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/DocumentsScreen.tsx",
+      "description": "Replace 21 hardcoded color values with useThemeStyles() colors. Same pattern.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/NotificationsScreen.tsx",
+      "description": "Replace 14 hardcoded color values with useThemeStyles() colors. Same pattern.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/HelpScreen.tsx",
+      "description": "Replace 18 hardcoded color values with useThemeStyles() colors. Same pattern.",
+      "schemaVerified": true
+    }
+  ],
+  "doNotTouch": [
+    {
+      "file": "apps/mobile/src/theme/colors.ts",
+      "reason": "Theme color definitions — source of truth for light/dark values. No changes needed."
+    },
+    {
+      "file": "apps/mobile/src/theme/useThemeStyles.ts",
+      "reason": "Theme hook — already provides everything needed. No changes."
+    },
+    {
+      "file": "apps/mobile/src/theme/index.ts",
+      "reason": "Theme barrel export. No changes."
+    },
+    {
+      "file": "apps/mobile/src/screens/SettingsScreen.tsx",
+      "reason": "Reference screen that correctly uses useThemeStyles. Must not regress."
+    },
+    {
+      "file": "apps/mobile/src/screens/TruckInventoryScreen.tsx",
+      "reason": "Reference screen that correctly uses useThemeStyles. Must not regress."
+    },
+    {
+      "file": "apps/mobile/src/screens/ProfileScreen.js",
+      "reason": "Menu screen — not part of this wave's theme fix."
+    },
+    {
+      "file": "apps/mobile/src/navigation/AppNavigator.js",
+      "reason": "Navigator — not part of this wave."
+    },
+    {
+      "file": "apps/mobile/src/services/offline/workOrderOutbox.ts",
+      "reason": "Wave 148 sync fix — not part of this wave."
+    }
+  ],
+  "removals": [],
+  "schemaChanges": [],
+  "seedDataChanges": [],
+  "integrationChecks": [
+    {
+      "check": "real-data-validation",
+      "description": "N/A — no API changes. Visual-only wave.",
+      "testFile": ""
+    },
+    {
+      "check": "link-through",
+      "description": "All 6 screens still navigate correctly from ProfileScreen menu items. Dark and light mode both render readable text on correct backgrounds.",
+      "testFile": "wave-149-theme.flow.cjs"
+    },
+    {
+      "check": "full-journey",
+      "description": "Toggle dark mode in Settings → navigate to each of the 6 screens → verify text is readable (not dark-on-dark or light-on-light). Toggle back to light → verify screens still look correct.",
+      "testFile": "wave-149-theme.flow.cjs"
+    },
+    {
+      "check": "fallback-behavior",
+      "description": "If useTheme() somehow returns undefined isDark, getThemeColors(false) returns light colors as safe default.",
+      "testFile": "wave-149-theme.test.js"
+    },
+    {
+      "check": "feature-flag-behavior",
+      "description": "N/A — no feature flags in this wave.",
+      "testFile": ""
+    }
+  ],
+  "externalDependencies": [],
+  "envVars": [],
+  "featureFlags": [],
+  "fallbackMatrix": [],
+  "cachePlan": {
+    "key": "",
+    "ttlHours": 0,
+    "refreshEndpoint": "",
+    "invalidateOn": []
+  },
+  "observability": {
+    "logs": [],
+    "metrics": [],
+    "alerts": []
+  },
+  "rollbackPlan": {
+    "immediate": "Revert all 6 screen files to pre-wave-149 versions. Colors go back to hardcoded light mode.",
+    "safeFallback": "Screens display in light mode only (current broken state). No data loss.",
+    "dataImpact": "None — purely visual changes, no schema or data modifications."
+  },
+  "validationGate": {
+    "previousWave": {
+      "screenshotsVerified": true,
+      "reportVerified": true,
+      "d03GateVerified": true,
+      "notes": "Wave 148 architect-approved (commit 80872092). All gates passed."
+    },
+    "selfCheck": {
+      "step": "Toggle dark mode on phone. Navigate to all 6 screens. Verify text readability and color consistency.",
+      "screenshotsTaken": false,
+      "screenshotsReviewed": false,
+      "allPagesRenderedCorrectly": false
+    }
+  },
+  "delegation": {
+    "description": "All 6 screens follow the identical pattern: import useThemeStyles, destructure colors, replace hardcoded values. Can be done by one polecat or split across two.",
+    "mayorDirect": [
+      "Phase 2 TEST-DESIGN: write theme verification tests"
+    ],
+    "polecatMolecules": [
+      {
+        "id": "polecat-A",
+        "title": "Theme integration for all 6 screens",
+        "description": "For each screen: (1) import { useThemeStyles } from '../theme', (2) add const { colors, isDark, styles } = useThemeStyles() at top of component, (3) replace every hardcoded color with the matching colors.* value, (4) use styles.container/styles.card where applicable to reduce boilerplate. Reference SettingsScreen.tsx lines 41+95 for the correct pattern.",
+        "files": [
+          "apps/mobile/src/screens/PersonalInfoScreen.tsx",
+          "apps/mobile/src/screens/MyVehicleScreen.tsx",
+          "apps/mobile/src/screens/TimeEntriesListScreen.tsx",
+          "apps/mobile/src/screens/DocumentsScreen.tsx",
+          "apps/mobile/src/screens/NotificationsScreen.tsx",
+          "apps/mobile/src/screens/HelpScreen.tsx"
+        ],
+        "styleReference": "SettingsScreen.tsx (line 41: import, line 95: destructure, lines 100+: colors.background/colors.card/colors.text usage). TruckInventoryScreen.tsx (line 22: import, line 37: destructure).",
+        "colorMapping": {
+          "#f3f4f6": "colors.background",
+          "#ffffff": "colors.card",
+          "#111827": "colors.text",
+          "#0f172a": "colors.text",
+          "#6b7280": "colors.textSecondary",
+          "#9ca3af": "colors.textMuted or colors.placeholder",
+          "#1e40af": "colors.primary",
+          "#3b82f6": "colors.primaryLight",
+          "#e5e7eb": "colors.border",
+          "#d1d5db": "colors.inputBorder",
+          "#f9fafb": "colors.backgroundSecondary"
+        }
+      }
+    ]
+  },
+  "notes": "Mobile-only wave. No API, web, or schema changes. Purely visual — replacing hardcoded colors with theme-aware values. EXPO RELOAD MANDATORY in Phase 4 (Rule 18) to verify dark mode on device."
+}

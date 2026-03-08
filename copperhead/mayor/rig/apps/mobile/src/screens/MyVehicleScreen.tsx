@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
+import { useThemeStyles } from '../theme';
 
 export default function MyVehicleScreen({ navigation }: { navigation: any }) {
+  const { colors, isDark } = useThemeStyles();
   const [vehicle, setVehicle] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,20 +53,20 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1e40af" />
+      <SafeAreaView style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </SafeAreaView>
     );
   }
 
   if (noVehicle) {
     return (
-      <SafeAreaView style={styles.emptyContainer}>
-        <View style={styles.emptyIcon}>
-          <Ionicons name="car-outline" size={48} color="#9ca3af" />
+      <SafeAreaView style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
+        <View style={[styles.emptyIcon, { backgroundColor: colors.backgroundSecondary, borderColor: colors.border }]}>
+          <Ionicons name="car-outline" size={48} color={colors.textMuted} />
         </View>
-        <Text style={styles.emptyTitle}>No Vehicle Assigned</Text>
-        <Text style={styles.emptySubtitle}>
+        <Text style={[styles.emptyTitle, { color: colors.text }]}>No Vehicle Assigned</Text>
+        <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
           Contact your dispatcher to get a vehicle assigned to your profile.
         </Text>
       </SafeAreaView>
@@ -83,26 +85,26 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
   ];
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
     <ScrollView
-      style={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
+      style={[styles.container, { backgroundColor: colors.background }]}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
     >
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <View style={styles.cardIcon}>
-            <Ionicons name="car" size={24} color="#1e40af" />
+      <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <View style={[styles.cardHeader, { borderBottomColor: colors.border }]}>
+          <View style={[styles.cardIcon, { backgroundColor: isDark ? colors.primaryDark + '30' : colors.infoBg }]}>
+            <Ionicons name="car" size={24} color={colors.primary} />
           </View>
-          <Text style={styles.cardTitle}>Assigned Vehicle</Text>
+          <Text style={[styles.cardTitle, { color: colors.text }]}>Assigned Vehicle</Text>
         </View>
 
         {rows.map((row, i) => (
-          <View key={row.label} style={[styles.row, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
+          <View key={row.label} style={[styles.row, { borderBottomColor: colors.border }, i === rows.length - 1 && { borderBottomWidth: 0 }]}>
             <View style={styles.rowLeft}>
-              <Ionicons name={row.icon as any} size={18} color="#6b7280" />
-              <Text style={styles.rowLabel}>{row.label}</Text>
+              <Ionicons name={row.icon as any} size={18} color={colors.textSecondary} />
+              <Text style={[styles.rowLabel, { color: colors.textSecondary }]}>{row.label}</Text>
             </View>
-            <Text style={styles.rowValue}>{row.value}</Text>
+            <Text style={[styles.rowValue, { color: colors.text }]}>{row.value}</Text>
           </View>
         ))}
       </View>
@@ -114,34 +116,32 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f3f4f6' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6', padding: 32 },
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
   emptyIcon: {
     width: 80, height: 80, borderRadius: 40,
-    backgroundColor: '#f3f4f6', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 2, borderColor: '#e5e7eb',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2,
   },
-  emptyTitle: { fontSize: 18, fontWeight: '600', color: '#374151', marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: '#6b7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
-  card: {
-    backgroundColor: '#ffffff', margin: 16, borderRadius: 12, overflow: 'hidden',
-  },
+  emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 16 },
+  emptySubtitle: { fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  card: { margin: 16, borderRadius: 12, overflow: 'hidden' },
   cardHeader: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    padding: 16, borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+    padding: 16, borderBottomWidth: 1,
   },
   cardIcon: {
     width: 40, height: 40, borderRadius: 10,
-    backgroundColor: '#eff6ff', justifyContent: 'center', alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
-  cardTitle: { fontSize: 17, fontWeight: '600', color: '#111827' },
+  cardTitle: { fontSize: 17, fontWeight: '600' },
   row: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 16, paddingVertical: 14,
-    borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+    borderBottomWidth: 1,
   },
   rowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  rowLabel: { fontSize: 14, color: '#6b7280' },
-  rowValue: { fontSize: 14, fontWeight: '500', color: '#111827', maxWidth: '50%', textAlign: 'right' },
+  rowLabel: { fontSize: 14 },
+  rowValue: { fontSize: 14, fontWeight: '500', maxWidth: '50%', textAlign: 'right' },
 });

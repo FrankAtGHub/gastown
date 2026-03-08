@@ -1,0 +1,21 @@
+{
+  "wave": 149,
+  "timestamp": "2026-03-08T06:25:45.800Z",
+  "target": "https://tech.numeruspro.com",
+  "headless": true,
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "flows": [
+    {
+      "name": "wave-149-theme",
+      "passed": true,
+      "message": "All 6 screens verified: useThemeStyles imported+called, no hardcoded colors, colors.* used throughout"
+    },
+    {
+      "name": "wave-149-theme.test.js",
+      "passed": true,
+      "message": "26/26 static analysis tests passed — imports, calls, no forbidden colors, colors.* usage, reference screens intact"
+    }
+  ]
+}

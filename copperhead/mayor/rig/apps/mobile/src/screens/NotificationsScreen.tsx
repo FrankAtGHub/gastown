@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
+import { useThemeStyles } from '../theme';
 
 interface Notification {
   id: string;
@@ -42,6 +43,7 @@ function timeAgo(iso: string): string {
 }
 
 export default function NotificationsScreen({ navigation }: { navigation: any }) {
+  const { colors, isDark } = useThemeStyles();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,77 +78,76 @@ export default function NotificationsScreen({ navigation }: { navigation: any })
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1e40af" />
+      <SafeAreaView style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </SafeAreaView>
     );
   }
 
   if (notifications.length === 0) {
     return (
-      <SafeAreaView style={styles.emptyContainer}>
-        <Ionicons name="notifications-off-outline" size={48} color="#9ca3af" />
-        <Text style={styles.emptyTitle}>No Notifications</Text>
-        <Text style={styles.emptySubtitle}>You're all caught up. New notifications will appear here.</Text>
+      <SafeAreaView style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
+        <Ionicons name="notifications-off-outline" size={48} color={colors.textMuted} />
+        <Text style={[styles.emptyTitle, { color: colors.text }]}>No Notifications</Text>
+        <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>You're all caught up. New notifications will appear here.</Text>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
     <FlatList
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       data={notifications}
       keyExtractor={(item) => item.id}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       renderItem={({ item }) => {
         const icon = TYPE_ICON[item.type] || TYPE_ICON.system;
+        const unreadBg = isDark ? colors.primaryDark + '30' : colors.infoBg;
         return (
           <TouchableOpacity
-            style={[styles.notifRow, !item.read && styles.unreadRow]}
+            style={[styles.notifRow, { backgroundColor: item.read ? colors.card : unreadBg }]}
             onPress={() => !item.read && markAsRead(item.id)}
             activeOpacity={item.read ? 1 : 0.7}
           >
-            {!item.read && <View style={styles.unreadDot} />}
+            {!item.read && <View style={[styles.unreadDot, { backgroundColor: colors.primary }]} />}
             <View style={styles.notifIcon}>
-              <Ionicons name={icon as any} size={20} color={item.read ? '#9ca3af' : '#1e40af'} />
+              <Ionicons name={icon as any} size={20} color={item.read ? colors.textMuted : colors.primary} />
             </View>
             <View style={styles.notifContent}>
-              <Text style={[styles.notifTitle, !item.read && styles.unreadText]}>
+              <Text style={[styles.notifTitle, { color: colors.text }, !item.read && { fontWeight: '600' }]}>
                 {item.title}
               </Text>
-              <Text style={styles.notifMessage} numberOfLines={2}>{item.message}</Text>
-              <Text style={styles.notifTime}>{timeAgo(item.created_at)}</Text>
+              <Text style={[styles.notifMessage, { color: colors.textSecondary }]} numberOfLines={2}>{item.message}</Text>
+              <Text style={[styles.notifTime, { color: colors.textMuted }]}>{timeAgo(item.created_at)}</Text>
             </View>
           </TouchableOpacity>
         );
       }}
-      ItemSeparatorComponent={() => <View style={styles.separator} />}
+      ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: colors.border }]} />}
     />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f3f4f6' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6', padding: 32 },
-  emptyTitle: { fontSize: 18, fontWeight: '600', color: '#374151', marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: '#6b7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
+  emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 16 },
+  emptySubtitle: { fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
   notifRow: {
     flexDirection: 'row', alignItems: 'flex-start',
-    backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 14,
+    paddingHorizontal: 16, paddingVertical: 14,
   },
-  unreadRow: { backgroundColor: '#eff6ff' },
   unreadDot: {
     width: 8, height: 8, borderRadius: 4,
-    backgroundColor: '#1e40af', marginTop: 6, marginRight: 8,
+    marginTop: 6, marginRight: 8,
   },
   notifIcon: { marginRight: 12, marginTop: 2 },
   notifContent: { flex: 1 },
-  notifTitle: { fontSize: 15, fontWeight: '500', color: '#374151' },
-  unreadText: { fontWeight: '600', color: '#111827' },
-  notifMessage: { fontSize: 13, color: '#6b7280', marginTop: 2, lineHeight: 18 },
-  notifTime: { fontSize: 12, color: '#9ca3af', marginTop: 4 },
-  separator: { height: 1, backgroundColor: '#f3f4f6' },
+  notifTitle: { fontSize: 15, fontWeight: '500' },
+  notifMessage: { fontSize: 13, marginTop: 2, lineHeight: 18 },
+  notifTime: { fontSize: 12, marginTop: 4 },
+  separator: { height: 1 },
 });

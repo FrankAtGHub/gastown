@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
+import { useThemeStyles } from '../theme';
 
 const FAQ = [
   {
@@ -36,34 +37,35 @@ const FAQ = [
 ];
 
 export default function HelpScreen({ navigation }: { navigation: any }) {
+  const { colors, isDark } = useThemeStyles();
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   const appVersion = Constants.expoConfig?.version || '1.0.0';
   const buildId = Constants.expoConfig?.extra?.eas?.projectId?.slice(0, 8) || '—';
 
   return (
-    <SafeAreaView style={styles.container}>
-    <ScrollView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
       {/* FAQ */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Frequently Asked Questions</Text>
+        <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Frequently Asked Questions</Text>
         {FAQ.map((item, i) => (
           <TouchableOpacity
             key={i}
-            style={styles.faqItem}
+            style={[styles.faqItem, { backgroundColor: colors.card }]}
             onPress={() => setExpandedIdx(expandedIdx === i ? null : i)}
             activeOpacity={0.7}
           >
             <View style={styles.faqHeader}>
-              <Text style={styles.faqQuestion}>{item.q}</Text>
+              <Text style={[styles.faqQuestion, { color: colors.text }]}>{item.q}</Text>
               <Ionicons
                 name={expandedIdx === i ? 'chevron-up' : 'chevron-down'}
                 size={18}
-                color="#6b7280"
+                color={colors.textSecondary}
               />
             </View>
             {expandedIdx === i && (
-              <Text style={styles.faqAnswer}>{item.a}</Text>
+              <Text style={[styles.faqAnswer, { color: colors.textSecondary }]}>{item.a}</Text>
             )}
           </TouchableOpacity>
         ))}
@@ -71,57 +73,57 @@ export default function HelpScreen({ navigation }: { navigation: any }) {
 
       {/* Support Contact */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Need More Help?</Text>
-        <View style={styles.supportCard}>
+        <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>Need More Help?</Text>
+        <View style={[styles.supportCard, { backgroundColor: colors.card }]}>
           <TouchableOpacity
-            style={styles.supportRow}
+            style={[styles.supportRow, { borderBottomColor: colors.border }]}
             onPress={() => Linking.openURL('mailto:support@numeruspro.com')}
           >
-            <View style={styles.supportIcon}>
-              <Ionicons name="mail-outline" size={20} color="#1e40af" />
+            <View style={[styles.supportIcon, { backgroundColor: isDark ? colors.primaryDark + '30' : colors.infoBg }]}>
+              <Ionicons name="mail-outline" size={20} color={colors.primary} />
             </View>
             <View style={styles.supportText}>
-              <Text style={styles.supportLabel}>Email Support</Text>
-              <Text style={styles.supportValue}>support@numeruspro.com</Text>
+              <Text style={[styles.supportLabel, { color: colors.text }]}>Email Support</Text>
+              <Text style={[styles.supportValue, { color: colors.textSecondary }]}>support@numeruspro.com</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.supportRow, { borderBottomWidth: 0 }]}
             onPress={() => Linking.openURL('tel:+18005551234')}
           >
-            <View style={styles.supportIcon}>
-              <Ionicons name="call-outline" size={20} color="#1e40af" />
+            <View style={[styles.supportIcon, { backgroundColor: isDark ? colors.primaryDark + '30' : colors.infoBg }]}>
+              <Ionicons name="call-outline" size={20} color={colors.primary} />
             </View>
             <View style={styles.supportText}>
-              <Text style={styles.supportLabel}>Phone Support</Text>
-              <Text style={styles.supportValue}>Mon–Fri, 8am–6pm CT</Text>
+              <Text style={[styles.supportLabel, { color: colors.text }]}>Phone Support</Text>
+              <Text style={[styles.supportValue, { color: colors.textSecondary }]}>Mon–Fri, 8am–6pm CT</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </View>
       </View>
 
       {/* Device Info */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>App Information</Text>
-        <View style={styles.infoCard}>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>App Version</Text>
-            <Text style={styles.infoValue}>v{appVersion}</Text>
+        <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>App Information</Text>
+        <View style={[styles.infoCard, { backgroundColor: colors.card }]}>
+          <View style={[styles.infoRow, { borderBottomColor: colors.border }]}>
+            <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>App Version</Text>
+            <Text style={[styles.infoValue, { color: colors.text }]}>v{appVersion}</Text>
           </View>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Build</Text>
-            <Text style={styles.infoValue}>{buildId}</Text>
+          <View style={[styles.infoRow, { borderBottomColor: colors.border }]}>
+            <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Build</Text>
+            <Text style={[styles.infoValue, { color: colors.text }]}>{buildId}</Text>
           </View>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Platform</Text>
-            <Text style={styles.infoValue}>{Platform.OS} {Platform.Version}</Text>
+          <View style={[styles.infoRow, { borderBottomColor: colors.border }]}>
+            <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Platform</Text>
+            <Text style={[styles.infoValue, { color: colors.text }]}>{Platform.OS} {Platform.Version}</Text>
           </View>
           <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
-            <Text style={styles.infoLabel}>Expo SDK</Text>
-            <Text style={styles.infoValue}>{Constants.expoConfig?.sdkVersion || '—'}</Text>
+            <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Expo SDK</Text>
+            <Text style={[styles.infoValue, { color: colors.text }]}>{Constants.expoConfig?.sdkVersion || '—'}</Text>
           </View>
         </View>
       </View>
@@ -133,34 +135,31 @@ export default function HelpScreen({ navigation }: { navigation: any }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f3f4f6' },
+  container: { flex: 1 },
   section: { marginTop: 16, paddingHorizontal: 16 },
-  sectionTitle: { fontSize: 13, fontWeight: '600', color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
-  faqItem: {
-    backgroundColor: '#ffffff', borderRadius: 10, marginBottom: 8,
-    paddingHorizontal: 16, paddingVertical: 14,
-  },
+  sectionTitle: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
+  faqItem: { borderRadius: 10, marginBottom: 8, paddingHorizontal: 16, paddingVertical: 14 },
   faqHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  faqQuestion: { fontSize: 15, fontWeight: '500', color: '#111827', flex: 1, marginRight: 8 },
-  faqAnswer: { fontSize: 14, color: '#6b7280', lineHeight: 20, marginTop: 10 },
-  supportCard: { backgroundColor: '#ffffff', borderRadius: 12, overflow: 'hidden' },
+  faqQuestion: { fontSize: 15, fontWeight: '500', flex: 1, marginRight: 8 },
+  faqAnswer: { fontSize: 14, lineHeight: 20, marginTop: 10 },
+  supportCard: { borderRadius: 12, overflow: 'hidden' },
   supportRow: {
     flexDirection: 'row', alignItems: 'center', padding: 16,
-    borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+    borderBottomWidth: 1,
   },
   supportIcon: {
     width: 40, height: 40, borderRadius: 10,
-    backgroundColor: '#eff6ff', justifyContent: 'center', alignItems: 'center', marginRight: 12,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
   supportText: { flex: 1 },
-  supportLabel: { fontSize: 15, fontWeight: '500', color: '#111827' },
-  supportValue: { fontSize: 13, color: '#6b7280', marginTop: 2 },
-  infoCard: { backgroundColor: '#ffffff', borderRadius: 12, overflow: 'hidden' },
+  supportLabel: { fontSize: 15, fontWeight: '500' },
+  supportValue: { fontSize: 13, marginTop: 2 },
+  infoCard: { borderRadius: 12, overflow: 'hidden' },
   infoRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 16, paddingVertical: 14,
-    borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+    borderBottomWidth: 1,
   },
-  infoLabel: { fontSize: 14, color: '#6b7280' },
-  infoValue: { fontSize: 14, fontWeight: '500', color: '#111827' },
+  infoLabel: { fontSize: 14 },
+  infoValue: { fontSize: 14, fontWeight: '500' },
 });

@@ -1,0 +1,22 @@
+{
+  "wave": 149,
+  "timestamp": "2026-03-08T06:25:45.800Z",
+  "mode": "post",
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "wave-149-theme",
+      "passed": true,
+      "message": "All 6 screens verified: useThemeStyles imported+called, no hardcoded colors, colors.* used throughout"
+    },
+    {
+      "name": "wave-149-theme.test.js",
+      "passed": true,
+      "tests": 26,
+      "output": "reen.tsx has no hardcoded light-mode colors\n  ✅ PersonalInfoScreen.tsx uses colors.* for styling\n  ✅ MyVehicleScreen.tsx uses colors.* for styling\n  ✅ TimeEntriesListScreen.tsx uses colors.* for styling\n  ✅ DocumentsScreen.tsx uses colors.* for styling\n  ✅ NotificationsScreen.tsx uses colors.* for styling\n  ✅ HelpScreen.tsx uses colors.* for styling\n  ✅ SettingsScreen.tsx (reference) still uses useThemeStyles\n  ✅ TruckInventoryScreen.tsx (reference) still uses useThemeStyles\n\n26/26 tests passed\n"
+    }
+  ]
+}

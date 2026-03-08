@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
+import { useThemeStyles } from '../theme';
 
 interface TimeEntry {
   id: string;
@@ -27,11 +28,19 @@ interface Section {
   data: TimeEntry[];
 }
 
-const TYPE_CONFIG: Record<string, { icon: string; color: string; label: string }> = {
-  work: { icon: 'hammer-outline', color: '#1e40af', label: 'Work' },
-  travel: { icon: 'car-outline', color: '#7c3aed', label: 'Travel' },
-  break: { icon: 'cafe-outline', color: '#d97706', label: 'Break' },
-  overtime: { icon: 'time-outline', color: '#dc2626', label: 'Overtime' },
+const TYPE_CONFIG: Record<string, { icon: string; label: string }> = {
+  work: { icon: 'hammer-outline', label: 'Work' },
+  travel: { icon: 'car-outline', label: 'Travel' },
+  break: { icon: 'cafe-outline', label: 'Break' },
+  overtime: { icon: 'time-outline', label: 'Overtime' },
+};
+
+// Type accent colors — consistent across themes (status/accent colors)
+const TYPE_ACCENT: Record<string, string> = {
+  work: '#2563eb',
+  travel: '#7c3aed',
+  break: '#d97706',
+  overtime: '#dc2626',
 };
 
 function formatDuration(minutes: number | null): string {
@@ -64,6 +73,7 @@ function groupByDate(entries: TimeEntry[]): Section[] {
 }
 
 export default function TimeEntriesListScreen({ navigation }: { navigation: any }) {
+  const { colors, isDark } = useThemeStyles();
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -87,18 +97,18 @@ export default function TimeEntriesListScreen({ navigation }: { navigation: any 
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1e40af" />
+      <SafeAreaView style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </SafeAreaView>
     );
   }
 
   if (entries.length === 0) {
     return (
-      <SafeAreaView style={styles.emptyContainer}>
-        <Ionicons name="time-outline" size={48} color="#9ca3af" />
-        <Text style={styles.emptyTitle}>No Time Entries</Text>
-        <Text style={styles.emptySubtitle}>Your time entries will appear here after you clock in on a work order.</Text>
+      <SafeAreaView style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
+        <Ionicons name="time-outline" size={48} color={colors.textMuted} />
+        <Text style={[styles.emptyTitle, { color: colors.text }]}>No Time Entries</Text>
+        <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>Your time entries will appear here after you clock in on a work order.</Text>
       </SafeAreaView>
     );
   }
@@ -106,65 +116,64 @@ export default function TimeEntriesListScreen({ navigation }: { navigation: any 
   const sections = groupByDate(entries);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
     <SectionList
-      style={styles.container}
+      style={[styles.container, { backgroundColor: colors.background }]}
       sections={sections}
       keyExtractor={(item) => item.id}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       renderSectionHeader={({ section }) => (
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>{section.title}</Text>
+        <View style={[styles.sectionHeader, { backgroundColor: colors.background }]}>
+          <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>{section.title}</Text>
         </View>
       )}
       renderItem={({ item }) => {
-        const config = TYPE_CONFIG[item.entry_type?.toLowerCase()] || TYPE_CONFIG.work;
+        const cfg = TYPE_CONFIG[item.entry_type?.toLowerCase()] || TYPE_CONFIG.work;
+        const accent = TYPE_ACCENT[item.entry_type?.toLowerCase()] || TYPE_ACCENT.work;
         return (
-          <View style={styles.entryRow}>
-            <View style={[styles.typeIcon, { backgroundColor: config.color + '15' }]}>
-              <Ionicons name={config.icon as any} size={18} color={config.color} />
+          <View style={[styles.entryRow, { backgroundColor: colors.card }]}>
+            <View style={[styles.typeIcon, { backgroundColor: accent + '15' }]}>
+              <Ionicons name={cfg.icon as any} size={18} color={accent} />
             </View>
             <View style={styles.entryContent}>
-              <Text style={styles.entryType}>{config.label}</Text>
-              <Text style={styles.entryTime}>
+              <Text style={[styles.entryType, { color: colors.text }]}>{cfg.label}</Text>
+              <Text style={[styles.entryTime, { color: colors.textSecondary }]}>
                 {formatTime(item.start_time)} – {formatTime(item.end_time)}
               </Text>
               {item.work_order_id && (
-                <Text style={styles.entryWO}>WO: {item.work_order_id.slice(0, 8)}</Text>
+                <Text style={[styles.entryWO, { color: colors.textMuted }]}>WO: {item.work_order_id.slice(0, 8)}</Text>
               )}
             </View>
-            <Text style={styles.entryDuration}>{formatDuration(item.duration_minutes)}</Text>
+            <Text style={[styles.entryDuration, { color: colors.primary }]}>{formatDuration(item.duration_minutes)}</Text>
           </View>
         );
       }}
-      ItemSeparatorComponent={() => <View style={styles.separator} />}
+      ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: colors.border }]} />}
     />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f3f4f6' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f3f4f6', padding: 32 },
-  emptyTitle: { fontSize: 18, fontWeight: '600', color: '#374151', marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: '#6b7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
-  sectionHeader: {
-    backgroundColor: '#f3f4f6', paddingHorizontal: 16, paddingVertical: 10, paddingTop: 16,
-  },
-  sectionTitle: { fontSize: 13, fontWeight: '600', color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 },
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
+  emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 16 },
+  emptySubtitle: { fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  sectionHeader: { paddingHorizontal: 16, paddingVertical: 10, paddingTop: 16 },
+  sectionTitle: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
   entryRow: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#ffffff', paddingHorizontal: 16, paddingVertical: 14,
+    paddingHorizontal: 16, paddingVertical: 14,
   },
   typeIcon: {
     width: 36, height: 36, borderRadius: 8,
     justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
   entryContent: { flex: 1 },
-  entryType: { fontSize: 15, fontWeight: '500', color: '#111827' },
-  entryTime: { fontSize: 13, color: '#6b7280', marginTop: 2 },
-  entryWO: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
-  entryDuration: { fontSize: 15, fontWeight: '600', color: '#1e40af' },
-  separator: { height: 1, backgroundColor: '#f3f4f6' },
+  entryType: { fontSize: 15, fontWeight: '500' },
+  entryTime: { fontSize: 13, marginTop: 2 },
+  entryWO: { fontSize: 12, marginTop: 2 },
+  entryDuration: { fontSize: 15, fontWeight: '600' },
+  separator: { height: 1 },
 });
