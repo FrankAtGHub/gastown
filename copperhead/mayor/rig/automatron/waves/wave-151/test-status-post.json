@@ -1,0 +1,22 @@
+{
+  "wave": 151,
+  "timestamp": "2026-03-08T08:21:46.320Z",
+  "mode": "post",
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "wave-151-crew-self.test.js",
+      "passed": true,
+      "tests": 17,
+      "output": "Wave 151 — Crew Self-Clock-In Tests\n\nAPI Controller:\n  ✅ controller exports selfClockIn\n  ✅ controller exports selfClockOut\n  ✅ selfClockIn validates crew membership\n  ✅ selfClockIn uses userId (not technicianId from body)\n  ✅ selfClockIn sets clock_in_method to self\n  ✅ selfClockIn checks no open time entry\n\nRoutes:\n  ✅ route registered for self-clock-in\n  ✅ route registered for self-clock-out\n  ✅ routes use POST method\n\nMobile API Service:\n  ✅ api.service exports selfClockIn function\n  ✅ api.service exports selfClockOut function\n  ✅ selfClockIn calls /self-clock-in endpoint\n\nWO Detail Screen:\n  ✅ WO detail imports useAuth\n  ✅ WO detail imports selfClockIn\n  ✅ WO detail has clock in/out handler\n\nRegression:\n  ✅ existing crewClockIn export still present\n  ✅ existing crewClockOut export still present\n\n17/17 tests passed"
+    },
+    {
+      "name": "wave-151-self-clock",
+      "passed": true,
+      "message": "All 7 self-clock-in checks passed"
+    }
+  ]
+}
