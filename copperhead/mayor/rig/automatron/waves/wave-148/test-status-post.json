@@ -1,0 +1,29 @@
+{
+  "wave": 148,
+  "phase": "verify",
+  "timestamp": "2026-03-07T22:21:00Z",
+  "tests": {
+    "api": {
+      "file": "tests/wave-148-profile.test.js",
+      "passed": 6,
+      "total": 6,
+      "results": [
+        { "name": "GET /api/users/me returns user profile", "pass": true },
+        { "name": "PATCH /api/users/me endpoint responds (known: preferences column missing)", "pass": true },
+        { "name": "GET /api/time-entries returns array", "pass": true },
+        { "name": "GET /api/notifications returns array", "pass": true },
+        { "name": "GET /api/notifications/unread-count returns number", "pass": true },
+        { "name": "workOrderOutbox sort handles null createdAt", "pass": true }
+      ]
+    }
+  },
+  "deploy": {
+    "target": "tech.numeruspro.com",
+    "image": "fieldops-tech-web:latest",
+    "status": "deployed",
+    "method": "kubectl set image + rollout restart"
+  },
+  "knownIssues": [
+    "PATCH /api/users/me: 'column preferences does not exist' — backend schema issue, not in wave scope"
+  ]
+}

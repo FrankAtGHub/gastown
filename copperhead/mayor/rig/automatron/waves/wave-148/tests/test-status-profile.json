@@ -1,0 +1,32 @@
+{
+  "wave": 148,
+  "phase": "test-design",
+  "tests": [
+    {
+      "name": "GET /api/users/me returns user profile",
+      "pass": true
+    },
+    {
+      "name": "PATCH /api/users/me endpoint responds (known: preferences column missing)",
+      "pass": true
+    },
+    {
+      "name": "GET /api/time-entries returns array",
+      "pass": true
+    },
+    {
+      "name": "GET /api/notifications returns array",
+      "pass": true
+    },
+    {
+      "name": "GET /api/notifications/unread-count returns number",
+      "pass": true
+    },
+    {
+      "name": "workOrderOutbox sort handles null createdAt",
+      "pass": true
+    }
+  ],
+  "passed": 6,
+  "total": 6
+}

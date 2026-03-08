@@ -1,0 +1,282 @@
+{
+  "wave": 148,
+  "title": "Mobile Sync Crash Fix + Profile Screen Completion",
+  "description": "Fix the sync button crash on TechnicianDashboardScreen and implement all 6 stubbed profile menu items. The sync crash is a null-safety bug in workOrderOutbox.ts sort. The profile items (Personal Info, My Vehicle, Time Entries, Documents, Notifications, Help) are all marked 'Coming Soon' with no screens or routes. API endpoints already exist for most features — this wave wires them to new mobile screens.",
+  "date": "2026-03-08",
+  "phase": "implement",
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/api/users/me",
+      "purpose": "Fetch current user profile (already exists, user.routes.js:171)",
+      "aiNative": "AI agent reads technician profile for context-aware dispatch decisions",
+      "testFile": "wave-148-profile.test.js"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/users/me",
+      "purpose": "Update current user profile (already exists, user.routes.js:199)",
+      "aiNative": "AI agent updates technician preferences (notification settings, availability)",
+      "testFile": "wave-148-profile.test.js"
+    },
+    {
+      "method": "GET",
+      "path": "/api/time-entries",
+      "purpose": "List time entries for current user (already exists, timeEntry.routes.js:11)",
+      "aiNative": "AI agent reads time entries for labor cost analysis and scheduling",
+      "testFile": "wave-148-time-entries.test.js"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications",
+      "purpose": "List notifications for current user (already exists, notifications.routes.js:24)",
+      "aiNative": "AI agent reads notification stream for event-driven workflows",
+      "testFile": "wave-148-notifications.test.js"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications/unread-count",
+      "purpose": "Unread notification count (already exists, notifications.routes.js:70)",
+      "aiNative": "AI agent monitors unread count for alerting thresholds",
+      "testFile": "wave-148-notifications.test.js"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/notifications/:id/read",
+      "purpose": "Mark notification as read (already exists, notifications.routes.js:89)",
+      "aiNative": "AI agent marks notifications as processed after acting on them",
+      "testFile": "wave-148-notifications.test.js"
+    }
+  ],
+  "routes": [
+    {
+      "path": "PersonalInfo (Stack.Screen)",
+      "component": "PersonalInfoScreen",
+      "purpose": "View/edit technician profile: name, email, phone, avatar",
+      "sidebarSection": "Profile menu item",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "path": "Vehicle (Stack.Screen)",
+      "component": "MyVehicleScreen",
+      "purpose": "View assigned vehicle details: make, model, license plate, mileage",
+      "sidebarSection": "Profile menu item",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "path": "TimeEntries (Stack.Screen)",
+      "component": "TimeEntriesListScreen",
+      "purpose": "List all time entries for current user with date filter",
+      "sidebarSection": "Profile menu item",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "path": "Documents (Stack.Screen)",
+      "component": "DocumentsScreen",
+      "purpose": "View certifications, licenses, safety docs for technician",
+      "sidebarSection": "Profile menu item",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "path": "Notifications (Stack.Screen)",
+      "component": "NotificationsScreen",
+      "purpose": "View notification history, mark as read, filter by type",
+      "sidebarSection": "Profile menu item",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "path": "Help (Stack.Screen)",
+      "component": "HelpScreen",
+      "purpose": "FAQ, support contact info, app version, diagnostic info",
+      "sidebarSection": "Profile menu item",
+      "testFile": "wave-148-smoke.flow.cjs"
+    }
+  ],
+  "components": [
+    {
+      "name": "PersonalInfoScreen",
+      "file": "apps/mobile/src/screens/PersonalInfoScreen.tsx",
+      "purpose": "Profile editor — fetches GET /api/users/me, form with name/email/phone/avatar, saves via PATCH /api/users/me"
+    },
+    {
+      "name": "MyVehicleScreen",
+      "file": "apps/mobile/src/screens/MyVehicleScreen.tsx",
+      "purpose": "Read-only vehicle card — fetches assigned vehicle from user profile data (vehicle_id JOIN), shows make/model/plate/VIN/mileage"
+    },
+    {
+      "name": "TimeEntriesListScreen",
+      "file": "apps/mobile/src/screens/TimeEntriesListScreen.tsx",
+      "purpose": "Time entry history — fetches GET /api/time-entries, FlatList grouped by date, shows type/duration/WO reference per entry"
+    },
+    {
+      "name": "DocumentsScreen",
+      "file": "apps/mobile/src/screens/DocumentsScreen.tsx",
+      "purpose": "Document list — certifications, licenses, safety docs. Shows 'No documents yet' placeholder initially. Ready for future API."
+    },
+    {
+      "name": "NotificationsScreen",
+      "file": "apps/mobile/src/screens/NotificationsScreen.tsx",
+      "purpose": "Notification list — fetches GET /api/notifications, FlatList with unread highlight, tap marks as read via PATCH"
+    },
+    {
+      "name": "HelpScreen",
+      "file": "apps/mobile/src/screens/HelpScreen.tsx",
+      "purpose": "Static help page — FAQ accordion, support email/phone, app version, device info for bug reports"
+    }
+  ],
+  "modifications": [
+    {
+      "file": "apps/mobile/src/services/offline/workOrderOutbox.ts",
+      "description": "FIX SYNC CRASH: Line 302 — .sort((a, b) => a.createdAt.localeCompare(b.createdAt)) crashes if createdAt is null/undefined from corrupted AsyncStorage data. Add null guard: .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/ProfileScreen.js",
+      "description": "Remove implemented:false flags from all 6 menu items. Set implemented:true. Ensure screen names match AppNavigator route names: PersonalInfo, Vehicle, TimeEntries, Documents, Notifications, Help",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/navigation/AppNavigator.js",
+      "description": "Register 6 new Stack.Screen entries with imports for all 6 new screen components. Route names must match ProfileScreen menu item screen values exactly.",
+      "schemaVerified": true
+    }
+  ],
+  "doNotTouch": [
+    {
+      "file": "apps/mobile/src/screens/TruckInventoryScreen.tsx",
+      "reason": "Working profile screen — must not break existing functionality"
+    },
+    {
+      "file": "apps/mobile/src/screens/SettingsScreen.tsx",
+      "reason": "Working profile screen — must not break existing functionality"
+    },
+    {
+      "file": "apps/mobile/src/screens/OutboxScreen.tsx",
+      "reason": "Working sync status screen — must not break existing functionality"
+    },
+    {
+      "file": "apps/mobile/src/screens/TimeEntryScreen.tsx",
+      "reason": "Existing per-WO time entry form (M4). The NEW TimeEntriesListScreen is a LIST view, not a replacement."
+    },
+    {
+      "file": "apps/mobile/src/screens/WorkOrderMessagesScreen.tsx",
+      "reason": "Existing per-WO messages screen. Not part of this wave."
+    },
+    {
+      "file": "apps/mobile/src/contexts/OfflineContext.tsx",
+      "reason": "Offline context provider — only workOrderOutbox.ts sort line is modified, not the context"
+    },
+    {
+      "file": "apps/api/src/routes/user.routes.js",
+      "reason": "API already exists and works — no backend changes in this wave"
+    },
+    {
+      "file": "apps/api/src/routes/timeEntry.routes.js",
+      "reason": "API already exists and works — no backend changes in this wave"
+    },
+    {
+      "file": "apps/api/src/routes/notifications.routes.js",
+      "reason": "API already exists and works — no backend changes in this wave"
+    }
+  ],
+  "removals": [],
+  "schemaChanges": [],
+  "seedDataChanges": [],
+  "integrationChecks": [
+    {
+      "check": "real-data-validation",
+      "description": "Test profile GET/PATCH with tech@fieldops.dev seeded user. Test time entries with real seeded time entry data. Test notifications with real seeded notification data.",
+      "testFile": "wave-148-profile.test.js"
+    },
+    {
+      "check": "link-through",
+      "description": "All 9 profile menu items navigate to correct screens and render content. Back navigation returns to Profile.",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "check": "full-journey",
+      "description": "Login as tech@fieldops.dev → Profile tab → each menu item opens correct screen → back nav works. Sync button does not crash.",
+      "testFile": "wave-148-smoke.flow.cjs"
+    },
+    {
+      "check": "fallback-behavior",
+      "description": "Sync button with null createdAt events does not crash. Documents screen handles no docs. Vehicle screen handles no assigned vehicle.",
+      "testFile": "wave-148-profile.test.js"
+    },
+    {
+      "check": "feature-flag-behavior",
+      "description": "N/A — no feature flags in this wave",
+      "testFile": "N/A"
+    }
+  ],
+  "externalDependencies": [],
+  "envVars": [],
+  "featureFlags": [],
+  "fallbackMatrix": [],
+  "cachePlan": {
+    "key": "",
+    "ttlHours": 0,
+    "refreshEndpoint": "",
+    "invalidateOn": []
+  },
+  "observability": {
+    "logs": ["[WorkOrderOutbox] sort null guard applied"],
+    "metrics": [],
+    "alerts": []
+  },
+  "rollbackPlan": {
+    "immediate": "Revert ProfileScreen.js to set implemented:false on broken items. Revert workOrderOutbox.ts sort line.",
+    "safeFallback": "Profile items show Coming Soon alert as before. Sync button crash returns.",
+    "dataImpact": "None — no schema or data changes in this wave."
+  },
+  "validationGate": {
+    "previousWave": {
+      "screenshotsVerified": true,
+      "reportVerified": true,
+      "d03GateVerified": true,
+      "notes": "Wave 147 was the last wave before rig reinstall. No artifacts survive locally but work was completed (referenced in docs/plans/)."
+    },
+    "selfCheck": {
+      "step": "Expo reload mandatory (Rule 18). Kill stale Metro, restart with --clear --tunnel, verify phone connects.",
+      "screenshotsTaken": false,
+      "screenshotsReviewed": false,
+      "allPagesRenderedCorrectly": false
+    }
+  },
+  "delegation": {
+    "description": "This wave has 8 work items. The sync fix and wiring (ProfileScreen + AppNavigator) are tightly coupled — mayor handles directly. The 6 new screens are independent and parallelizable across 3 polecats.",
+    "mayorDirect": [
+      "workOrderOutbox.ts sync crash fix (1 line null guard)",
+      "ProfileScreen.js — flip implemented flags, verify screen names",
+      "AppNavigator.js — register 6 new Stack.Screen entries with imports",
+      "Phase 2 TEST-DESIGN: write all test files"
+    ],
+    "polecatMolecules": [
+      {
+        "id": "polecat-A",
+        "title": "PersonalInfoScreen + MyVehicleScreen",
+        "description": "Create 2 screens. PersonalInfoScreen: fetch GET /api/users/me on mount, editable form (firstName, lastName, phone), save via PATCH /api/users/me. Avatar placeholder (initials circle). MyVehicleScreen: read-only card from user.vehicle data, shows make/model/plate/VIN/mileage. 'No vehicle assigned' if null.",
+        "files": ["apps/mobile/src/screens/PersonalInfoScreen.tsx", "apps/mobile/src/screens/MyVehicleScreen.tsx"],
+        "styleReference": "Match SettingsScreen.tsx and TruckInventoryScreen.tsx patterns. Brand blue #1e40af header, #f3f4f6 bg.",
+        "apiContract": "GET /api/users/me → { success, data: { user: { id, firstName, lastName, email, phone, role, vehicle_number, ... } } }. PATCH /api/users/me body: { firstName, lastName, phone }. Auth: Bearer token from AuthContext useAuth() hook."
+      },
+      {
+        "id": "polecat-B",
+        "title": "TimeEntriesListScreen + NotificationsScreen",
+        "description": "Create 2 screens. TimeEntriesListScreen: fetch GET /api/time-entries, FlatList grouped by date (SectionList), each row: type icon (Work/Travel/Break), duration, WO reference. Pull-to-refresh. NotificationsScreen: fetch GET /api/notifications, FlatList with unread highlight (bold + blue dot). Tap calls PATCH /api/notifications/:id/read. Pull-to-refresh.",
+        "files": ["apps/mobile/src/screens/TimeEntriesListScreen.tsx", "apps/mobile/src/screens/NotificationsScreen.tsx"],
+        "styleReference": "Match WorkOrderListScreen.tsx FlatList pattern and TransfersListScreen.tsx. Brand colors same as above.",
+        "apiContract": "GET /api/time-entries → { success, data: { time_entries: [{ id, entry_type, start_time, end_time, duration_minutes, work_order_id, notes }] } }. GET /api/notifications → { success, data: { notifications: [{ id, title, message, type, read, created_at }] } }. PATCH /api/notifications/:id/read → { success }."
+      },
+      {
+        "id": "polecat-C",
+        "title": "DocumentsScreen + HelpScreen",
+        "description": "Create 2 screens. DocumentsScreen: placeholder with professional layout, document icon, 'No documents available' message. SectionList structure ready for future categories (Certifications, Licenses, Safety). HelpScreen: static — FAQ accordion (expand/collapse), support section (support@numeruspro.com), app version from expo-constants, device info via Platform.OS/Version.",
+        "files": ["apps/mobile/src/screens/DocumentsScreen.tsx", "apps/mobile/src/screens/HelpScreen.tsx"],
+        "styleReference": "Match SettingsScreen.tsx visual style. SafeAreaView + ScrollView. Brand colors.",
+        "apiContract": "No API calls needed. DocumentsScreen is a prepared shell. HelpScreen is fully static."
+      }
+    ]
+  },
+  "notes": "Mobile-only wave. No API or web changes. All API endpoints already exist. Only code fix is null guard on workOrderOutbox.ts:302. EXPO RELOAD MANDATORY in Phase 4 (Rule 18)."
+}
