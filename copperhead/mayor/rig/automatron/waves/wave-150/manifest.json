@@ -1,0 +1,117 @@
+{
+  "wave": 150,
+  "title": "Theme Standardizer Phase 1 — Extract Shared Package",
+  "description": "Extract mobile app color tokens from apps/mobile/src/theme/colors.ts into packages/theme/ as @field-ops/theme. Wire mobile app to import from shared package. No visual changes — import-only refactor.",
+  "date": "2026-03-08",
+  "phase": "plan",
+  "endpoints": [],
+  "routes": [],
+  "components": [],
+  "modifications": [
+    {
+      "file": "packages/theme/package.json",
+      "description": "New package @field-ops/theme with TypeScript build",
+      "schemaVerified": true
+    },
+    {
+      "file": "packages/theme/tsconfig.json",
+      "description": "TypeScript config matching shared-domain pattern",
+      "schemaVerified": true
+    },
+    {
+      "file": "packages/theme/src/tokens.ts",
+      "description": "Framework-agnostic color token definitions: ThemeTokens interface, lightTokens, darkTokens, statusTokens, statusTokensDark, getThemeTokens(), getStatusTokens()",
+      "schemaVerified": true
+    },
+    {
+      "file": "packages/theme/src/index.ts",
+      "description": "Barrel export for all tokens",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/theme/colors.ts",
+      "description": "Replace local color definitions with imports from @field-ops/theme. Re-export with mobile-specific aliases (ThemeColors = ThemeTokens). Add statusBarBg/statusBarStyle as mobile-only extensions.",
+      "schemaVerified": true
+    }
+  ],
+  "doNotTouch": [
+    {
+      "file": "apps/mobile/src/theme/useThemeStyles.ts",
+      "reason": "Theme hook — consumes colors.ts exports. Must not change."
+    },
+    {
+      "file": "apps/mobile/src/theme/index.ts",
+      "reason": "Barrel exports — already correct, no changes needed."
+    },
+    {
+      "file": "packages/shared-ui/",
+      "reason": "ThemeProvider — no changes needed."
+    },
+    {
+      "file": "packages/shared-domain/",
+      "reason": "Domain types — unrelated to this wave."
+    }
+  ],
+  "removals": [],
+  "schemaChanges": [],
+  "seedDataChanges": [],
+  "integrationChecks": [
+    {
+      "check": "real-data-validation",
+      "description": "N/A — no API changes. Package refactor only.",
+      "testFile": ""
+    },
+    {
+      "check": "import-resolution",
+      "description": "Verify apps/mobile/src/theme/colors.ts successfully imports from @field-ops/theme. All existing exports (ThemeColors, lightColors, darkColors, etc.) still available.",
+      "testFile": "wave-150-tokens.test.js"
+    },
+    {
+      "check": "no-regression",
+      "description": "Verify useThemeStyles.ts still works — imports getThemeColors and getStatusColors from colors.ts which now re-exports from @field-ops/theme.",
+      "testFile": "wave-150-tokens.test.js"
+    }
+  ],
+  "externalDependencies": [],
+  "envVars": [],
+  "featureFlags": [],
+  "fallbackMatrix": [],
+  "cachePlan": {
+    "key": "",
+    "ttlHours": 0,
+    "refreshEndpoint": "",
+    "invalidateOn": []
+  },
+  "observability": {
+    "logs": [],
+    "metrics": [],
+    "alerts": []
+  },
+  "rollbackPlan": {
+    "immediate": "Revert colors.ts to local definitions. Remove packages/theme/.",
+    "safeFallback": "Mobile app continues working with local color definitions.",
+    "dataImpact": "None — purely structural refactor, no data changes."
+  },
+  "validationGate": {
+    "previousWave": {
+      "screenshotsVerified": true,
+      "reportVerified": true,
+      "d03GateVerified": true,
+      "notes": "Wave 149 architect-approved. All gates passed."
+    },
+    "selfCheck": {
+      "step": "Run tsc in packages/theme. Verify Expo web export succeeds. Verify colors.ts exports match pre-refactor.",
+      "screenshotsTaken": false,
+      "screenshotsReviewed": false,
+      "allPagesRenderedCorrectly": false
+    }
+  },
+  "delegation": {
+    "description": "Mayor-direct. Extract tokens, create package, update import.",
+    "mayorDirect": [
+      "All phases — straightforward extraction"
+    ],
+    "polecatMolecules": []
+  },
+  "notes": "Phase 1 of Theme Standardizer plan. Import-only change for mobile. No visual differences. packages/theme/ will be consumed by web and docs in waves 151-153."
+}
