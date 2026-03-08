@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,8 +9,12 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useThemeStyles } from '../theme';
 
 export default function ProfileScreen({ user, onLogout, navigation }) {
+  const { colors, isDark } = useThemeStyles();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+
   // Menu items with implemented flag
   const menuItems = [
     { icon: 'cube-outline', label: 'My Truck Inventory', screen: 'TruckInventory', implemented: true },
@@ -99,7 +103,7 @@ export default function ProfileScreen({ user, onLogout, navigation }) {
             onPress={() => handleMenuItemPress(item)}
           >
             <View style={styles.menuItemLeft}>
-              <Ionicons name={item.icon} size={22} color={item.implemented ? "#374151" : "#9ca3af"} />
+              <Ionicons name={item.icon} size={22} color={item.implemented ? colors.text : colors.textMuted} />
               <Text style={[styles.menuLabel, !item.implemented && styles.menuLabelDisabled]}>{item.label}</Text>
               {!item.implemented && (
                 <View style={styles.comingSoonBadge}>
@@ -107,7 +111,7 @@ export default function ProfileScreen({ user, onLogout, navigation }) {
                 </View>
               )}
             </View>
-            <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
+            <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
           </TouchableOpacity>
         ))}
       </View>
@@ -127,13 +131,13 @@ export default function ProfileScreen({ user, onLogout, navigation }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: colors.background,
   },
   header: {
-    backgroundColor: '#1e40af',
+    backgroundColor: colors.primary,
     paddingTop: 60,
     paddingBottom: 24,
     paddingHorizontal: 20,
@@ -147,7 +151,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#3b82f6',
+    backgroundColor: colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 16,
@@ -155,7 +159,7 @@ const styles = StyleSheet.create({
   avatarText: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#ffffff',
+    color: colors.textInverse,
   },
   profileInfo: {
     flex: 1,
@@ -163,7 +167,7 @@ const styles = StyleSheet.create({
   name: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#ffffff',
+    color: colors.textInverse,
   },
   role: {
     fontSize: 14,
@@ -200,7 +204,7 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#ffffff',
+    color: colors.textInverse,
   },
   statLabel: {
     fontSize: 12,
@@ -208,7 +212,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   menuSection: {
-    backgroundColor: '#ffffff',
+    backgroundColor: colors.card,
     marginTop: 16,
     marginHorizontal: 16,
     borderRadius: 12,
@@ -220,7 +224,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
+    borderBottomColor: colors.border,
   },
   menuItemLeft: {
     flexDirection: 'row',
@@ -229,16 +233,16 @@ const styles = StyleSheet.create({
   },
   menuLabel: {
     fontSize: 15,
-    color: '#374151',
+    color: colors.text,
   },
   menuLabelDisabled: {
-    color: '#9ca3af',
+    color: colors.textMuted,
   },
   menuItemDisabled: {
     opacity: 0.7,
   },
   comingSoonBadge: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: colors.background,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
@@ -246,7 +250,7 @@ const styles = StyleSheet.create({
   },
   comingSoonText: {
     fontSize: 10,
-    color: '#6b7280',
+    color: colors.textSecondary,
     fontWeight: '500',
   },
   logoutSection: {
@@ -257,7 +261,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: colors.card,
     padding: 16,
     borderRadius: 12,
     gap: 8,
@@ -269,7 +273,7 @@ const styles = StyleSheet.create({
   },
   version: {
     textAlign: 'center',
-    color: '#9ca3af',
+    color: colors.textMuted,
     fontSize: 12,
     marginTop: 24,
   },

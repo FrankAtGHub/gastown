@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,6 +7,9 @@ import { ActivityIndicator, View } from 'react-native';
 
 // Auth Context
 import { useAuth } from '../contexts/AuthContext';
+
+// Theme
+import { useThemeStyles } from '../theme';
 
 // Navigation ref for external navigation (e.g., from notifications)
 import { navigationRef } from '../contexts/NotificationContext';
@@ -58,6 +61,7 @@ const Tab = createBottomTabNavigator();
 
 function MainTabs() {
   const { user, logout } = useAuth();
+  const { colors } = useThemeStyles();
   // TODO: Fetch pending transfers count for badge
   // const { pendingCount } = useTransfersBadge();
 
@@ -89,14 +93,15 @@ function MainTabs() {
 
           return <Ionicons name={iconName} size={size} color={color} />;
         },
-        tabBarActiveTintColor: '#1e40af',
-        tabBarInactiveTintColor: '#6b7280',
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textMuted,
         tabBarStyle: {
           paddingBottom: 8,
           paddingTop: 8,
           height: 60,
           borderTopWidth: 1,
-          borderTopColor: '#e5e7eb',
+          borderTopColor: colors.border,
+          backgroundColor: colors.card,
         },
         tabBarLabelStyle: {
           fontSize: 11,
@@ -134,18 +139,36 @@ function MainTabs() {
 
 export default function AppNavigator() {
   const { isAuthenticated, isLoading } = useAuth();
+  const { colors, isDark } = useThemeStyles();
+
+  // React Navigation theme to match our color system
+  const navTheme = isDark ? {
+    ...DarkTheme,
+    colors: { ...DarkTheme.colors, background: colors.background, card: colors.card, text: colors.text, border: colors.border, primary: colors.primary },
+  } : {
+    ...DefaultTheme,
+    colors: { ...DefaultTheme.colors, background: colors.background, card: colors.card, text: colors.text, border: colors.border, primary: colors.primary },
+  };
+
+  // Shared header style for all stack screens
+  const themedHeader = {
+    headerTintColor: colors.primary,
+    headerStyle: { backgroundColor: colors.card },
+    headerTitleStyle: { color: colors.text },
+    headerBackTitle: 'Back',
+  };
 
   // Show loading state while checking auth
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1e40af' }}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.primary }}>
         <ActivityIndicator size="large" color="#ffffff" />
       </View>
     );
   }
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} theme={navTheme}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!isAuthenticated ? (
           <Stack.Screen name="Login" component={LoginScreen} />
@@ -155,300 +178,143 @@ export default function AppNavigator() {
             <Stack.Screen
               name="WorkOrderDetail"
               component={WorkOrderDetailScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Work Order',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Work Order', ...themedHeader }}
             />
             <Stack.Screen
               name="TimeEntry"
               component={TimeEntryScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Time Tracking',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Time Tracking', ...themedHeader }}
             />
             <Stack.Screen
               name="WorkOrderParts"
               component={WorkOrderPartsScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Parts & Materials',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Parts & Materials', ...themedHeader }}
             />
             <Stack.Screen
               name="WorkOrderActivities"
               component={WorkOrderActivitiesScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Activities & Checklist',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Activities & Checklist', ...themedHeader }}
             />
             <Stack.Screen
               name="PhotoCapture"
               component={PhotoCaptureScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Photos',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Photos', ...themedHeader }}
             />
             <Stack.Screen
               name="WorkOrderSafety"
               component={WorkOrderSafetyScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Safety Checklist',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Safety Checklist', ...themedHeader }}
             />
             <Stack.Screen
               name="WorkOrderTaskChecklist"
               component={WorkOrderTaskChecklistScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Task Checklist',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Task Checklist', ...themedHeader }}
             />
             <Stack.Screen
               name="WorkOrderSignature"
               component={WorkOrderSignatureScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Complete Job',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Complete Job', ...themedHeader }}
             />
             <Stack.Screen
               name="WorkOrderMessages"
               component={WorkOrderMessagesScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Messages',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Messages', ...themedHeader }}
             />
             <Stack.Screen
               name="EndOfDay"
               component={EndOfDayScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             <Stack.Screen
               name="Settings"
               component={SettingsScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             {/* Transfer screens */}
             <Stack.Screen
               name="TransferDetail"
               component={TransferDetailScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             <Stack.Screen
               name="TransferPartialAccept"
               component={TransferPartialAcceptScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             <Stack.Screen
               name="ScanTransfer"
               component={ScanTransferScreen}
-              options={{
-                headerShown: false,
-                presentation: 'fullScreenModal',
-              }}
+              options={{ headerShown: false, presentation: 'fullScreenModal' }}
             />
             {/* Inventory screens */}
             <Stack.Screen
               name="TruckInventory"
               component={TruckInventoryScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             <Stack.Screen
               name="Assets"
               component={AssetsListScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Assets',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Assets', ...themedHeader }}
             />
             <Stack.Screen
               name="Parts"
               component={PartsListScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Parts',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Parts', ...themedHeader }}
             />
             <Stack.Screen
               name="Outbox"
               component={OutboxScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Sync Status',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Sync Status', ...themedHeader }}
             />
             {/* AI Screens */}
             <Stack.Screen
               name="PhotoToQuote"
               component={PhotoToQuoteScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             {/* Crew Screens */}
             <Stack.Screen
               name="CrewClockIn"
               component={CrewClockInScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Crew',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: {
-                  backgroundColor: '#ffffff',
-                },
-              }}
+              options={{ headerShown: true, headerTitle: 'Crew', ...themedHeader }}
             />
             {/* Property Profile Screens */}
             <Stack.Screen
               name="SiteEquipment"
               component={SiteEquipmentScreen}
-              options={{
-                headerShown: false,
-              }}
+              options={{ headerShown: false }}
             />
             {/* Profile screens (Wave 148) */}
             <Stack.Screen
               name="PersonalInfo"
               component={PersonalInfoScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Personal Information',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: { backgroundColor: '#ffffff' },
-              }}
+              options={{ headerShown: true, headerTitle: 'Personal Information', ...themedHeader }}
             />
             <Stack.Screen
               name="Vehicle"
               component={MyVehicleScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'My Vehicle',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: { backgroundColor: '#ffffff' },
-              }}
+              options={{ headerShown: true, headerTitle: 'My Vehicle', ...themedHeader }}
             />
             <Stack.Screen
               name="TimeEntries"
               component={TimeEntriesListScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Time Entries',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: { backgroundColor: '#ffffff' },
-              }}
+              options={{ headerShown: true, headerTitle: 'Time Entries', ...themedHeader }}
             />
             <Stack.Screen
               name="Documents"
               component={DocumentsScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Documents',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: { backgroundColor: '#ffffff' },
-              }}
+              options={{ headerShown: true, headerTitle: 'Documents', ...themedHeader }}
             />
             <Stack.Screen
               name="Notifications"
               component={NotificationsScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Notifications',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: { backgroundColor: '#ffffff' },
-              }}
+              options={{ headerShown: true, headerTitle: 'Notifications', ...themedHeader }}
             />
             <Stack.Screen
               name="Help"
               component={HelpScreen}
-              options={{
-                headerShown: true,
-                headerTitle: 'Help & Support',
-                headerBackTitle: 'Back',
-                headerTintColor: '#1e40af',
-                headerStyle: { backgroundColor: '#ffffff' },
-              }}
+              options={{ headerShown: true, headerTitle: 'Help & Support', ...themedHeader }}
             />
             {/* TODO: Handle push notification tap to navigate to transfer */}
             {/* Deep link structure: fieldops://transfer/{id} */}

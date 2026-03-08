@@ -1,0 +1,17 @@
+{
+  "wave": 154,
+  "timestamp": "2026-03-08T09:25:00.000Z",
+  "mode": "post",
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "wave-154-navigator-theme.test.js",
+      "passed": true,
+      "tests": 18,
+      "output": "18/18 tests passed — AppNavigator theme-aware (useThemeStyles, navTheme, themedHeader, no hardcoded hex), ProfileScreen themed, package.json + metro.config wired"
+    }
+  ]
+}
