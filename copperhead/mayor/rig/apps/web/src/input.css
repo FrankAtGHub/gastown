@@ -1,0 +1,189 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   Field Ops Theme Tokens (from @field-ops/theme)
+   Auto-switch light/dark via CSS variables
+   ============================================ */
+:root {
+  --fo-background: #f8fafc;
+  --fo-background-secondary: #f1f5f9;
+  --fo-background-tertiary: #e2e8f0;
+  --fo-card: #ffffff;
+  --fo-card-hover: #f1f5f9;
+  --fo-text: #0f172a;
+  --fo-text-secondary: #475569;
+  --fo-text-muted: #94a3b8;
+  --fo-text-inverse: #ffffff;
+  --fo-border: #e2e8f0;
+  --fo-border-light: #f1f5f9;
+  --fo-success: #16a34a;
+  --fo-success-bg: #dcfce7;
+  --fo-warning: #d97706;
+  --fo-warning-bg: #fef3c7;
+  --fo-error: #dc2626;
+  --fo-error-bg: #fee2e2;
+  --fo-info: #2563eb;
+  --fo-info-bg: #dbeafe;
+  --fo-primary: #1e40af;
+  --fo-primary-light: #3b82f6;
+  --fo-primary-dark: #1e3a8a;
+  --fo-input-bg: #ffffff;
+  --fo-input-border: #d1d5db;
+  --fo-input-text: #111827;
+  --fo-placeholder: #9ca3af;
+}
+
+.dark {
+  --fo-background: #0f172a;
+  --fo-background-secondary: #1e293b;
+  --fo-background-tertiary: #334155;
+  --fo-card: #1e293b;
+  --fo-card-hover: #334155;
+  --fo-text: #f8fafc;
+  --fo-text-secondary: #94a3b8;
+  --fo-text-muted: #64748b;
+  --fo-text-inverse: #0f172a;
+  --fo-border: #334155;
+  --fo-border-light: #475569;
+  --fo-success: #22c55e;
+  --fo-success-bg: #14532d;
+  --fo-warning: #f59e0b;
+  --fo-warning-bg: #78350f;
+  --fo-error: #ef4444;
+  --fo-error-bg: #7f1d1d;
+  --fo-info: #3b82f6;
+  --fo-info-bg: #1e3a8a;
+  --fo-primary: #3b82f6;
+  --fo-primary-light: #60a5fa;
+  --fo-primary-dark: #1e40af;
+  --fo-input-bg: #1e293b;
+  --fo-input-border: #475569;
+  --fo-input-text: #f8fafc;
+  --fo-placeholder: #64748b;
+}
+
+/* Prevent text cursor on non-input labels and headings */
+@layer base {
+  label, h1, h2, h3, h4, h5, h6 {
+    cursor: default;
+  }
+}
+
+/* Hide scrollbar while keeping scroll functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari and Opera */
+}
+
+/* Thin scrollbar for areas that need visible scrolling */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.5) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.5);
+  border-radius: 2px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.7);
+}
+
+/* ============================================
+   Custom Scrollbar Styles - Theme Aware
+   ============================================ */
+
+/* Light theme scrollbars (darker track/thumb) */
+:root {
+  --scrollbar-track: rgba(100, 116, 139, 0.1);
+  --scrollbar-thumb: rgba(100, 116, 139, 0.3);
+  --scrollbar-thumb-hover: rgba(100, 116, 139, 0.5);
+}
+
+/* Dark theme scrollbars (lighter track/thumb) */
+.dark {
+  --scrollbar-track: rgba(148, 163, 184, 0.1);
+  --scrollbar-thumb: rgba(148, 163, 184, 0.3);
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.5);
+}
+
+/* Webkit scrollbar styling (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Auto-hide scrollbars with fade effect on scrollable containers */
+.overflow-auto::-webkit-scrollbar-thumb,
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-x-auto::-webkit-scrollbar-thumb {
+  background: transparent;
+  transition: background 0.3s ease;
+}
+
+.overflow-auto:hover::-webkit-scrollbar-thumb,
+.overflow-y-auto:hover::-webkit-scrollbar-thumb,
+.overflow-x-auto:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+.overflow-auto:hover::-webkit-scrollbar-thumb:hover,
+.overflow-y-auto:hover::-webkit-scrollbar-thumb:hover,
+.overflow-x-auto:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Firefox fade effect */
+@supports (scrollbar-width: thin) {
+  .overflow-auto,
+  .overflow-y-auto,
+  .overflow-x-auto {
+    scrollbar-color: transparent transparent;
+  }
+
+  .overflow-auto:hover,
+  .overflow-y-auto:hover,
+  .overflow-x-auto:hover {
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+}
