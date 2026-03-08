@@ -247,11 +247,11 @@ export default function CrewClockInScreen({
   const roleBadge = (role: string) => {
     switch (role) {
       case 'lead':
-        return { bg: '#dbeafe', text: '#1e40af', label: 'Lead' };
+        return { bg: colors.infoBg, text: colors.primary, label: 'Lead' };
       case 'apprentice':
-        return { bg: '#fef3c7', text: '#92400e', label: 'Apprentice' };
+        return { bg: colors.warningBg, text: colors.warning, label: 'Apprentice' };
       default:
-        return { bg: '#f3f4f6', text: '#374151', label: 'Crew' };
+        return { bg: colors.backgroundSecondary, text: colors.textSecondary, label: 'Crew' };
     }
   };
 
@@ -404,7 +404,7 @@ export default function CrewClockInScreen({
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centered}>
-          <Ionicons name="alert-circle-outline" size={48} color="#ef4444" />
+          <Ionicons name="alert-circle-outline" size={48} color={colors.error} />
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={loadCrew}>
             <Text style={styles.retryBtnText}>Retry</Text>
@@ -448,8 +448,8 @@ export default function CrewClockInScreen({
             borderRadius: 8,
           }}
         >
-          <Ionicons name="qr-code-outline" size={16} color="#fff" />
-          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600', marginLeft: 6 }}>
+          <Ionicons name="qr-code-outline" size={16} color={colors.textInverse} />
+          <Text style={{ color: colors.textInverse, fontSize: 13, fontWeight: '600', marginLeft: 6 }}>
             {isGeneratingQr ? 'Generating...' : 'QR Clock-In'}
           </Text>
         </TouchableOpacity>
@@ -547,7 +547,7 @@ export default function CrewClockInScreen({
                   handleGenerateQr();
                 }}
               >
-                <Text style={{ color: '#fff', fontWeight: '600' }}>Refresh</Text>
+                <Text style={{ color: colors.textInverse, fontWeight: '600' }}>Refresh</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={{
@@ -587,7 +587,7 @@ const createStyles = (colors: any) => StyleSheet.create({
   errorText: {
     marginTop: 12,
     fontSize: 16,
-    color: '#ef4444',
+    color: colors.error,
     textAlign: 'center',
   },
   emptyText: {
@@ -618,7 +618,7 @@ const createStyles = (colors: any) => StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#93c5fd',
+    borderBottomColor: colors.primaryLight,
   },
   bannerText: {
     fontSize: 15,
@@ -659,7 +659,7 @@ const createStyles = (colors: any) => StyleSheet.create({
     maxWidth: '49%',
   },
   crewCardClockedIn: {
-    borderColor: '#86efac',
+    borderColor: colors.success,
     backgroundColor: colors.successBg,
   },
 
@@ -681,7 +681,7 @@ const createStyles = (colors: any) => StyleSheet.create({
   avatarText: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#3730a3',
+    color: colors.primary,
   },
   cardNameContainer: {
     flex: 1,
@@ -714,15 +714,15 @@ const createStyles = (colors: any) => StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#22c55e',
+    backgroundColor: colors.success,
   },
   statusDotOff: {
-    backgroundColor: '#9ca3af',
+    backgroundColor: colors.textMuted,
   },
   statusTextIn: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#16a34a',
+    color: colors.success,
   },
   statusTextOut: {
     fontSize: 13,
@@ -755,7 +755,7 @@ const createStyles = (colors: any) => StyleSheet.create({
     backgroundColor: colors.primary,
   },
   actionBtnOut: {
-    backgroundColor: '#dc2626',
+    backgroundColor: colors.error,
   },
   actionBtnText: {
     color: colors.textInverse,

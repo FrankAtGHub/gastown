@@ -1,0 +1,90 @@
+{
+  "wave": 155,
+  "timestamp": "2026-03-08T15:57:36.386Z",
+  "total": 20,
+  "passed": 20,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "EndOfDayScreen.tsx: imports useThemeStyles",
+      "status": "pass"
+    },
+    {
+      "name": "EndOfDayScreen.tsx: calls useThemeStyles()",
+      "status": "pass"
+    },
+    {
+      "name": "EndOfDayScreen.tsx: createStyles takes colors param",
+      "status": "pass"
+    },
+    {
+      "name": "EndOfDayScreen.tsx: no non-exempt hardcoded hex colors",
+      "status": "pass"
+    },
+    {
+      "name": "EndOfDayScreen.tsx: StyleSheet uses theme tokens",
+      "status": "pass"
+    },
+    {
+      "name": "LoginScreen.tsx: imports useThemeStyles",
+      "status": "pass"
+    },
+    {
+      "name": "LoginScreen.tsx: calls useThemeStyles()",
+      "status": "pass"
+    },
+    {
+      "name": "LoginScreen.tsx: createStyles takes colors param",
+      "status": "pass"
+    },
+    {
+      "name": "LoginScreen.tsx: no non-exempt hardcoded hex colors",
+      "status": "pass"
+    },
+    {
+      "name": "LoginScreen.tsx: StyleSheet uses theme tokens",
+      "status": "pass"
+    },
+    {
+      "name": "CrewClockInScreen.tsx: imports useThemeStyles",
+      "status": "pass"
+    },
+    {
+      "name": "CrewClockInScreen.tsx: calls useThemeStyles()",
+      "status": "pass"
+    },
+    {
+      "name": "CrewClockInScreen.tsx: createStyles takes colors param",
+      "status": "pass"
+    },
+    {
+      "name": "CrewClockInScreen.tsx: no non-exempt hardcoded hex colors",
+      "status": "pass"
+    },
+    {
+      "name": "CrewClockInScreen.tsx: StyleSheet uses theme tokens",
+      "status": "pass"
+    },
+    {
+      "name": "PhotoCaptureScreen.native.tsx: imports useThemeStyles",
+      "status": "pass"
+    },
+    {
+      "name": "PhotoCaptureScreen.native.tsx: calls useThemeStyles()",
+      "status": "pass"
+    },
+    {
+      "name": "PhotoCaptureScreen.native.tsx: createStyles takes colors param",
+      "status": "pass"
+    },
+    {
+      "name": "PhotoCaptureScreen.native.tsx: no non-exempt hardcoded hex colors",
+      "status": "pass"
+    },
+    {
+      "name": "PhotoCaptureScreen.native.tsx: StyleSheet uses theme tokens",
+      "status": "pass"
+    }
+  ]
+}
