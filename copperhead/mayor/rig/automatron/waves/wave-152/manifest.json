@@ -1,0 +1,139 @@
+{
+  "wave": 152,
+  "title": "Crew Clock-In Wave B — QR Quick Clock-In",
+  "description": "Lead tech generates a QR code on CrewClockInScreen. Crew members scan with phone camera, open tech.numeruspro.com/clock-in?token=XXX — a lightweight standalone web page (no app required). Selfie + submit → time entry created. Uses short-lived session tokens stored in clock_in_sessions table.",
+  "date": "2026-03-08",
+  "phase": "plan",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/work-orders/:id/clock-in-session",
+      "description": "Lead tech creates a clock-in session with short-lived token (5 min TTL)"
+    },
+    {
+      "method": "GET",
+      "path": "/api/clock-in/verify",
+      "description": "Verify session token, return WO info (no auth required — token-based)"
+    },
+    {
+      "method": "POST",
+      "path": "/api/clock-in/submit",
+      "description": "Submit clock-in with token + technician name + GPS (no auth required)"
+    }
+  ],
+  "routes": [],
+  "components": [],
+  "modifications": [
+    {
+      "file": "apps/api/migrations/158_clock_in_sessions.sql",
+      "description": "Create clock_in_sessions table for QR session tokens",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/api/src/routes/clock-in.routes.js",
+      "description": "New route file for clock-in session endpoints (verify + submit are unauthenticated)",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/api/src/routes/workOrder.routes.js",
+      "description": "Add POST /work-orders/:id/clock-in-session endpoint for lead tech",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/public/clock-in/index.html",
+      "description": "Standalone HTML page for QR clock-in — selfie capture, GPS, submit form. No React, no app install required.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/CrewClockInScreen.tsx",
+      "description": "Add QR code display button. Generate session token via API, show QR code with tech.numeruspro.com/clock-in?token=XXX",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/services/api.service.ts",
+      "description": "Add createClockInSession() API function",
+      "schemaVerified": true
+    }
+  ],
+  "doNotTouch": [
+    {
+      "file": "apps/api/src/controllers/mobile-sync.controller.js",
+      "reason": "Existing crew clock-in — unchanged. Self-clock-in from wave 151 stays."
+    },
+    {
+      "file": "apps/mobile/src/screens/WorkOrderDetailScreen.tsx",
+      "reason": "Self-clock button from wave 151 — unchanged."
+    }
+  ],
+  "removals": [],
+  "schemaChanges": [
+    {
+      "table": "clock_in_sessions",
+      "change": "CREATE TABLE",
+      "description": "Session tokens for QR clock-in. UUID PK, tenant_id, work_order_id, created_by, session_token (unique), expires_at, is_active."
+    }
+  ],
+  "seedDataChanges": [],
+  "integrationChecks": [
+    {
+      "check": "session-create",
+      "description": "POST /work-orders/:id/clock-in-session creates session with token",
+      "testFile": "wave-152-qr-clock.test.js"
+    },
+    {
+      "check": "token-verify",
+      "description": "GET /clock-in/verify?token=XXX returns WO info for valid token, error for expired/invalid",
+      "testFile": "wave-152-qr-clock.test.js"
+    },
+    {
+      "check": "clock-in-submit",
+      "description": "POST /clock-in/submit with valid token creates time entry",
+      "testFile": "wave-152-qr-clock.test.js"
+    },
+    {
+      "check": "standalone-page",
+      "description": "clock-in/index.html exists and contains form, camera access, submit logic",
+      "testFile": "wave-152-qr-clock.test.js"
+    }
+  ],
+  "externalDependencies": [],
+  "envVars": [],
+  "featureFlags": [],
+  "fallbackMatrix": [],
+  "cachePlan": {
+    "key": "",
+    "ttlHours": 0,
+    "refreshEndpoint": "",
+    "invalidateOn": []
+  },
+  "observability": {
+    "logs": [],
+    "metrics": [],
+    "alerts": []
+  },
+  "rollbackPlan": {
+    "immediate": "Drop clock_in_sessions table. Remove routes. Remove clock-in HTML page.",
+    "safeFallback": "QR clock-in unavailable — lead device clock-in and self-clock-in still work.",
+    "dataImpact": "clock_in_sessions is new table — drop is safe. Time entries created via QR are standard records."
+  },
+  "validationGate": {
+    "previousWave": {
+      "screenshotsVerified": true,
+      "reportVerified": true,
+      "d03GateVerified": true,
+      "notes": "Wave 151 architect-approved."
+    },
+    "selfCheck": {
+      "step": "Deploy API + tech-web. Create session via API. Open tech.numeruspro.com/clock-in?token=XXX. Verify page loads, shows WO info, has camera/submit.",
+      "screenshotsTaken": false,
+      "screenshotsReviewed": false,
+      "allPagesRenderedCorrectly": false
+    }
+  },
+  "delegation": {
+    "description": "Mayor-direct. Migration + API + standalone HTML + mobile QR.",
+    "mayorDirect": ["All phases"],
+    "polecatMolecules": []
+  },
+  "notes": "QR clock-in page is standalone HTML — no React, no app install. Crew members just scan QR and open URL in phone browser. Session tokens expire in 5 minutes and are single-use per technician."
+}

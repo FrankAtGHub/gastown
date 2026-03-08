@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Crew Clock-In — NumerusPro</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      background: #1e40af;
+      color: white;
+      padding: 16px 20px;
+      text-align: center;
+    }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
+    .container { flex: 1; padding: 20px; max-width: 480px; margin: 0 auto; width: 100%; }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .card h2 { font-size: 16px; color: #1e40af; margin-bottom: 12px; }
+    .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: #64748b; font-size: 14px; }
+    .info-value { font-weight: 500; font-size: 14px; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 14px; color: #475569; margin-bottom: 6px; font-weight: 500; }
+    .form-group input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 16px;
+      outline: none;
+    }
+    .form-group input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #16a34a; color: white; }
+    .btn-primary:hover:not(:disabled) { background: #15803d; }
+    .status { padding: 16px; border-radius: 10px; text-align: center; margin-bottom: 16px; }
+    .status-loading { background: #dbeafe; color: #1e40af; }
+    .status-error { background: #fee2e2; color: #991b1b; }
+    .status-success { background: #dcfce7; color: #065f46; }
+    .status-expired { background: #fef3c7; color: #92400e; }
+    .hidden { display: none; }
+    .gps-status { font-size: 12px; color: #64748b; margin-top: 8px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Crew Clock-In</h1>
+    <p>NumerusPro Field Ops</p>
+  </div>
+
+  <div class="container">
+    <!-- Loading state -->
+    <div id="loading" class="status status-loading">
+      Verifying session...
+    </div>
+
+    <!-- Error state -->
+    <div id="error" class="status status-error hidden"></div>
+
+    <!-- Expired state -->
+    <div id="expired" class="status status-expired hidden">
+      This clock-in session has expired. Ask your lead tech to generate a new QR code.
+    </div>
+
+    <!-- Success state -->
+    <div id="success" class="status status-success hidden">
+      <strong>Clocked In!</strong>
+      <p style="margin-top:8px">You're now on the clock. Have a great shift.</p>
+    </div>
+
+    <!-- Work order info -->
+    <div id="wo-info" class="card hidden">
+      <h2>Work Order</h2>
+      <div class="info-row">
+        <span class="info-label">Number</span>
+        <span class="info-value" id="wo-number">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Job</span>
+        <span class="info-value" id="wo-title">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Customer</span>
+        <span class="info-value" id="wo-customer">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Location</span>
+        <span class="info-value" id="wo-address">—</span>
+      </div>
+    </div>
+
+    <!-- Clock-in form -->
+    <div id="clock-form" class="card hidden">
+      <h2>Your Info</h2>
+      <div class="form-group">
+        <label for="name">Your Full Name</label>
+        <input type="text" id="name" placeholder="First Last" autocomplete="name" required>
+      </div>
+      <button class="btn btn-primary" id="submit-btn" onclick="submitClockIn()" disabled>
+        Clock In
+      </button>
+      <div class="gps-status" id="gps-status">Acquiring GPS location...</div>
+    </div>
+  </div>
+
+  <script>
+    let sessionToken = null;
+    let gpsLocation = null;
+
+    // Parse token from URL
+    const params = new URLSearchParams(window.location.search);
+    sessionToken = params.get('token');
+
+    if (!sessionToken) {
+      showError('No clock-in token provided. Scan the QR code again.');
+      document.getElementById('loading').classList.add('hidden');
+    } else {
+      verifyToken();
+    }
+
+    // Get GPS
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          gpsLocation = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+          document.getElementById('gps-status').textContent = 'GPS location acquired ✓';
+          checkFormReady();
+        },
+        () => {
+          document.getElementById('gps-status').textContent = 'GPS unavailable — clock-in will proceed without location';
+          checkFormReady();
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    } else {
+      document.getElementById('gps-status').textContent = 'GPS not supported';
+      checkFormReady();
+    }
+
+    async function verifyToken() {
+      try {
+        const resp = await fetch('/api/clock-in/verify?token=' + encodeURIComponent(sessionToken));
+        const body = await resp.json();
+
+        document.getElementById('loading').classList.add('hidden');
+
+        if (!body.success) {
+          if (resp.status === 410) {
+            document.getElementById('expired').classList.remove('hidden');
+          } else {
+            showError(body.error || 'Invalid session');
+          }
+          return;
+        }
+
+        // Show WO info
+        const wo = body.workOrder;
+        document.getElementById('wo-number').textContent = wo.work_order_number || '—';
+        document.getElementById('wo-title').textContent = wo.title || '—';
+        document.getElementById('wo-customer').textContent = wo.customer_name || '—';
+        document.getElementById('wo-address').textContent = wo.address || '—';
+        document.getElementById('wo-info').classList.remove('hidden');
+        document.getElementById('clock-form').classList.remove('hidden');
+
+        // Enable submit when name is entered
+        document.getElementById('name').addEventListener('input', checkFormReady);
+        checkFormReady();
+      } catch (e) {
+        document.getElementById('loading').classList.add('hidden');
+        showError('Network error — check your connection and try again.');
+      }
+    }
+
+    function checkFormReady() {
+      const name = document.getElementById('name').value.trim();
+      document.getElementById('submit-btn').disabled = name.length < 2;
+    }
+
+    async function submitClockIn() {
+      const btn = document.getElementById('submit-btn');
+      const name = document.getElementById('name').value.trim();
+
+      if (name.length < 2) return;
+
+      btn.disabled = true;
+      btn.textContent = 'Clocking in...';
+
+      try {
+        const resp = await fetch('/api/clock-in/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: sessionToken,
+            technicianName: name,
+            location: gpsLocation,
+          }),
+        });
+        const body = await resp.json();
+
+        if (body.success) {
+          document.getElementById('clock-form').classList.add('hidden');
+          document.getElementById('success').classList.remove('hidden');
+        } else {
+          if (resp.status === 409) {
+            showError('You are already clocked in to this work order.');
+          } else if (resp.status === 410) {
+            document.getElementById('clock-form').classList.add('hidden');
+            document.getElementById('expired').classList.remove('hidden');
+          } else {
+            showError(body.error || 'Clock-in failed. Try again.');
+          }
+          btn.disabled = false;
+          btn.textContent = 'Clock In';
+        }
+      } catch (e) {
+        showError('Network error — check your connection.');
+        btn.disabled = false;
+        btn.textContent = 'Clock In';
+      }
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>

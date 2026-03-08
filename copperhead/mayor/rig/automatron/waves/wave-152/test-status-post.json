@@ -1,0 +1,17 @@
+{
+  "wave": 152,
+  "timestamp": "2026-03-08T08:49:00.000Z",
+  "mode": "post",
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "wave-152-qr-clock.test.js",
+      "passed": true,
+      "tests": 17,
+      "output": "Wave 152 — QR Clock-In Tests\n\nMigration:\n  ✅ migration 158_clock_in_sessions.sql exists\n  ✅ migration creates clock_in_sessions table\n  ✅ migration has session_token column\n  ✅ migration has expires_at column\n\nAPI Routes:\n  ✅ clock-in.routes.js exists\n  ✅ verify endpoint registered\n  ✅ submit endpoint registered\n  ✅ clock-in-session endpoint in WO routes\n\nStandalone HTML:\n  ✅ clock-in/index.html exists\n  ✅ HTML has name input for crew identification\n  ✅ HTML has submit button\n  ✅ HTML calls /api/clock-in/verify\n  ✅ HTML calls /api/clock-in/submit\n\nMobile:\n  ✅ CrewClockInScreen has QR functionality\n  ✅ API service has createClockInSession\n\nRegression:\n  ✅ existing selfClockIn still present in API service\n  ✅ existing crewClockIn still present in API service\n\n17/17 tests passed"
+    }
+  ]
+}

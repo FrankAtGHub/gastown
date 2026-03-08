@@ -1725,6 +1725,14 @@ export function selfClockIn(
   });
 }
 
+export function createClockInSession(
+  workOrderId: string
+): Promise<ApiResponse<{ success: boolean; session: { id: string; token: string; expiresAt: string; qrUrl: string } }>> {
+  return apiRequest(`/work-orders/${workOrderId}/clock-in-session`, {
+    method: 'POST',
+  });
+}
+
 export function selfClockOut(
   workOrderId: string,
   data: SelfClockOutRequest
