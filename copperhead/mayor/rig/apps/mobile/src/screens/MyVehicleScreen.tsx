@@ -6,6 +6,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
@@ -50,15 +51,15 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
+      <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#1e40af" />
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (noVehicle) {
     return (
-      <View style={styles.emptyContainer}>
+      <SafeAreaView style={styles.emptyContainer}>
         <View style={styles.emptyIcon}>
           <Ionicons name="car-outline" size={48} color="#9ca3af" />
         </View>
@@ -66,7 +67,7 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
         <Text style={styles.emptySubtitle}>
           Contact your dispatcher to get a vehicle assigned to your profile.
         </Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
@@ -82,6 +83,7 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
   ];
 
   return (
+    <SafeAreaView style={styles.container}>
     <ScrollView
       style={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
@@ -107,6 +109,7 @@ export default function MyVehicleScreen({ navigation }: { navigation: any }) {
 
       <View style={{ height: 40 }} />
     </ScrollView>
+    </SafeAreaView>
   );
 }
 

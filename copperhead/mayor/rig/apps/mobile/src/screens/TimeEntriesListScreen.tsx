@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   TouchableOpacity,
+  SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
@@ -86,25 +87,26 @@ export default function TimeEntriesListScreen({ navigation }: { navigation: any 
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
+      <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#1e40af" />
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (entries.length === 0) {
     return (
-      <View style={styles.emptyContainer}>
+      <SafeAreaView style={styles.emptyContainer}>
         <Ionicons name="time-outline" size={48} color="#9ca3af" />
         <Text style={styles.emptyTitle}>No Time Entries</Text>
         <Text style={styles.emptySubtitle}>Your time entries will appear here after you clock in on a work order.</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
   const sections = groupByDate(entries);
 
   return (
+    <SafeAreaView style={styles.container}>
     <SectionList
       style={styles.container}
       sections={sections}
@@ -137,6 +139,7 @@ export default function TimeEntriesListScreen({ navigation }: { navigation: any 
       }}
       ItemSeparatorComponent={() => <View style={styles.separator} />}
     />
+    </SafeAreaView>
   );
 }
 

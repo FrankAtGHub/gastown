@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Linking,
   Platform,
+  SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
@@ -41,6 +42,7 @@ export default function HelpScreen({ navigation }: { navigation: any }) {
   const buildId = Constants.expoConfig?.extra?.eas?.projectId?.slice(0, 8) || '—';
 
   return (
+    <SafeAreaView style={styles.container}>
     <ScrollView style={styles.container}>
       {/* FAQ */}
       <View style={styles.section}>
@@ -126,6 +128,7 @@ export default function HelpScreen({ navigation }: { navigation: any }) {
 
       <View style={{ height: 40 }} />
     </ScrollView>
+    </SafeAreaView>
   );
 }
 

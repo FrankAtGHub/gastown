@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
@@ -71,13 +72,14 @@ export default function PersonalInfoScreen({ navigation }: { navigation: any }) 
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
+      <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#1e40af" />
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
+    <SafeAreaView style={styles.container}>
     <ScrollView
       style={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
@@ -149,6 +151,7 @@ export default function PersonalInfoScreen({ navigation }: { navigation: any }) 
 
       <View style={{ height: 40 }} />
     </ScrollView>
+    </SafeAreaView>
   );
 }
 

@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   TouchableOpacity,
+  SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import apiService from '../services/api.service';
@@ -75,23 +76,24 @@ export default function NotificationsScreen({ navigation }: { navigation: any })
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
+      <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#1e40af" />
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (notifications.length === 0) {
     return (
-      <View style={styles.emptyContainer}>
+      <SafeAreaView style={styles.emptyContainer}>
         <Ionicons name="notifications-off-outline" size={48} color="#9ca3af" />
         <Text style={styles.emptyTitle}>No Notifications</Text>
         <Text style={styles.emptySubtitle}>You're all caught up. New notifications will appear here.</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
+    <SafeAreaView style={styles.container}>
     <FlatList
       style={styles.container}
       data={notifications}
@@ -121,6 +123,7 @@ export default function NotificationsScreen({ navigation }: { navigation: any })
       }}
       ItemSeparatorComponent={() => <View style={styles.separator} />}
     />
+    </SafeAreaView>
   );
 }
 
