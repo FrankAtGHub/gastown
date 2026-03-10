@@ -1,0 +1,36 @@
+# HEARTBEAT.md — {{ .RoleName }}
+
+## Focus Areas
+{{- if eq .RoleName "mayor" }}
+- Check convoy status (active work)
+- Check rig health (polecats responding?)
+- Check mail queue (unread messages?)
+- Check beads status (blocked issues?)
+{{- else if eq .RoleName "witness" }}
+- Check polecat sessions (alive, responsive?)
+- Check merge queue (pending MRs?)
+- Check for stale polecats (no activity >1h?)
+{{- else if eq .RoleName "polecat" }}
+- Check current bead progress
+- Check for blockers
+- Check test results
+{{- else if eq .RoleName "crew" }}
+- Check current bead progress
+- Check for blockers
+- Check test results
+{{- else }}
+- Check assigned work status
+- Check for blockers or issues
+{{- end }}
+
+## Report Only When
+- Meaningful status changes occurred
+- Blockers or crashes detected
+- Work completed or failed
+
+## Quiet Hours (23:00-08:00)
+- Only alert on blockers or urgent failures
+
+## Response
+- Reply `HEARTBEAT_OK` if nothing meaningful changed
+- Otherwise report the changes briefly

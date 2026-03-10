@@ -175,6 +175,14 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 	// started with. Only emitted when GT telemetry is active (GT_OTEL_LOGS_URL set).
 	telemetry.RecordPrimeContext(context.Background(), formula, os.Getenv("GT_ROLE"), primeHookMode)
 
+	// Inject agent identity/memory files (.agent/ directory)
+	injectAgentFiles(ctx)
+
+	// Auto-log session start to daily log (non-fatal)
+	if !primeDryRun {
+		autoLogSessionStart(ctx)
+	}
+
 	hasSlungWork := checkSlungWork(ctx, hookedBead)
 	explain(hasSlungWork, "Autonomous mode: hooked/in-progress work detected")
 
