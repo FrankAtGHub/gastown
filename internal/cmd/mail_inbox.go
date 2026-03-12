@@ -65,12 +65,22 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listing messages: %w", err)
 	}
+	if messages == nil {
+		messages = make([]*mail.Message, 0)
+	}
 
 	// JSON output
 	if mailInboxJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(messages)
+		if err := enc.Encode(messages); err != nil {
+			return err
+		}
+		// Ack after output so JSON reflects accurate read-time state.
+		if ackErr := mailbox.AcknowledgeDeliveries(address, messages); ackErr != nil {
+			fmt.Fprintf(os.Stderr, "gt mail inbox: delivery ack failed: %v\n", ackErr)
+		}
+		return nil
 	}
 
 	// Human-readable output
@@ -111,7 +121,12 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 			style.Dim.Render(msg.ID),
 			msg.From)
 		fmt.Printf("      %s\n",
-			style.Dim.Render(msg.Timestamp.Format("2006-01-02 15:04")))
+			style.Dim.Render(msg.Timestamp.Local().Format("2006-01-02 15:04")))
+	}
+
+	// Ack after output so human-readable display is not delayed by bd subprocesses.
+	if ackErr := mailbox.AcknowledgeDeliveries(address, messages); ackErr != nil {
+		fmt.Fprintf(os.Stderr, "gt mail inbox: delivery ack failed: %v\n", ackErr)
 	}
 
 	return nil
@@ -119,7 +134,7 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 
 func runMailRead(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
-		return errors.New("message ID or index required")
+		return fmt.Errorf("message ID or index required\n\nRun 'gt mail inbox' to list messages and their IDs")
 	}
 	msgRef := args[0]
 
@@ -164,7 +179,14 @@ func runMailRead(cmd *cobra.Command, args []string) error {
 	if mailReadJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(msg)
+		if err := enc.Encode(msg); err != nil {
+			return err
+		}
+		// Ack after output so JSON reflects accurate read-time state.
+		if ackErr := mailbox.AcknowledgeDeliveries(address, []*mail.Message{msg}); ackErr != nil {
+			fmt.Fprintf(os.Stderr, "gt mail read: delivery ack failed: %v\n", ackErr)
+		}
+		return nil
 	}
 
 	// Human-readable output
@@ -183,7 +205,7 @@ func runMailRead(cmd *cobra.Command, args []string) error {
 	fmt.Printf("%s %s%s%s\n\n", style.Bold.Render("Subject:"), msg.Subject, typeStr, priorityStr)
 	fmt.Printf("From: %s\n", msg.From)
 	fmt.Printf("To: %s\n", msg.To)
-	fmt.Printf("Date: %s\n", msg.Timestamp.Format("2006-01-02 15:04:05"))
+	fmt.Printf("Date: %s\n", msg.Timestamp.Local().Format("2006-01-02 15:04:05"))
 	fmt.Printf("ID: %s\n", style.Dim.Render(msg.ID))
 
 	if msg.ThreadID != "" {
@@ -195,6 +217,11 @@ func runMailRead(cmd *cobra.Command, args []string) error {
 
 	if msg.Body != "" {
 		fmt.Printf("\n%s\n", msg.Body)
+	}
+
+	// Ack after output (non-fatal).
+	if ackErr := mailbox.AcknowledgeDeliveries(address, []*mail.Message{msg}); ackErr != nil {
+		fmt.Fprintf(os.Stderr, "gt mail read: delivery ack failed: %v\n", ackErr)
 	}
 
 	return nil

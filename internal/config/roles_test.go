@@ -33,28 +33,28 @@ func TestLoadBuiltinRoleDefinition(t *testing.T) {
 			name:          "witness",
 			role:          "witness",
 			wantScope:     "rig",
-			wantPattern:   "gt-{rig}-witness",
+			wantPattern:   "{prefix}-witness",
 			wantPreSync:   false,
 		},
 		{
 			name:          "refinery",
 			role:          "refinery",
 			wantScope:     "rig",
-			wantPattern:   "gt-{rig}-refinery",
+			wantPattern:   "{prefix}-refinery",
 			wantPreSync:   true,
 		},
 		{
 			name:          "polecat",
 			role:          "polecat",
 			wantScope:     "rig",
-			wantPattern:   "gt-{rig}-{name}",
-			wantPreSync:   true,
+			wantPattern:   "{prefix}-{name}",
+			wantPreSync:   false,
 		},
 		{
 			name:          "crew",
 			role:          "crew",
 			wantScope:     "rig",
-			wantPattern:   "gt-{rig}-crew-{name}",
+			wantPattern:   "{prefix}-crew-{name}",
 			wantPreSync:   true,
 		},
 		{
@@ -180,6 +180,7 @@ func TestExpandPattern(t *testing.T) {
 		rig      string
 		name     string
 		role     string
+		prefix   string
 		expected string
 	}{
 		{
@@ -188,9 +189,10 @@ func TestExpandPattern(t *testing.T) {
 			expected: "/home/user/gt",
 		},
 		{
-			pattern:  "gt-{rig}-witness",
+			pattern:  "{prefix}-witness",
 			rig:      "gastown",
-			expected: "gt-gastown-witness",
+			prefix:   "gt",
+			expected: "gt-witness",
 		},
 		{
 			pattern:  "{town}/{rig}/crew/{name}",
@@ -199,11 +201,18 @@ func TestExpandPattern(t *testing.T) {
 			name:     "max",
 			expected: "/home/user/gt/gastown/crew/max",
 		},
+		{
+			pattern:  "{prefix}-{name}",
+			rig:      "gastown",
+			name:     "toast",
+			prefix:   "gt",
+			expected: "gt-toast",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.pattern, func(t *testing.T) {
-			got := ExpandPattern(tt.pattern, tt.town, tt.rig, tt.name, tt.role)
+			got := ExpandPattern(tt.pattern, tt.town, tt.rig, tt.name, tt.role, tt.prefix)
 			if got != tt.expected {
 				t.Errorf("ExpandPattern() = %q, want %q", got, tt.expected)
 			}
@@ -315,40 +324,3 @@ func TestLoadRoleDefinition_NoOverrideFiles(t *testing.T) {
 	}
 }
 
-func TestToLegacyRoleConfig(t *testing.T) {
-	def := &RoleDefinition{
-		Role:  "witness",
-		Scope: "rig",
-		Session: RoleSessionConfig{
-			Pattern:      "gt-{rig}-witness",
-			WorkDir:      "{town}/{rig}/witness",
-			NeedsPreSync: false,
-			StartCommand: "exec claude",
-		},
-		Env: map[string]string{"GT_ROLE": "witness"},
-		Health: RoleHealthConfig{
-			PingTimeout:         Duration{30 * time.Second},
-			ConsecutiveFailures: 3,
-			KillCooldown:        Duration{5 * time.Minute},
-			StuckThreshold:      Duration{time.Hour},
-		},
-	}
-
-	legacy := def.ToLegacyRoleConfig()
-
-	if legacy.SessionPattern != "gt-{rig}-witness" {
-		t.Errorf("SessionPattern = %q, want %q", legacy.SessionPattern, "gt-{rig}-witness")
-	}
-	if legacy.WorkDirPattern != "{town}/{rig}/witness" {
-		t.Errorf("WorkDirPattern = %q, want %q", legacy.WorkDirPattern, "{town}/{rig}/witness")
-	}
-	if legacy.NeedsPreSync != false {
-		t.Errorf("NeedsPreSync = %v, want false", legacy.NeedsPreSync)
-	}
-	if legacy.PingTimeout != "30s" {
-		t.Errorf("PingTimeout = %q, want %q", legacy.PingTimeout, "30s")
-	}
-	if legacy.ConsecutiveFailures != 3 {
-		t.Errorf("ConsecutiveFailures = %d, want 3", legacy.ConsecutiveFailures)
-	}
-}

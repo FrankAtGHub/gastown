@@ -30,6 +30,8 @@ var (
 	formulaRunPR      int
 	formulaRunRig     string
 	formulaRunDryRun  bool
+	formulaRunAgent   string
+	formulaRunFiles   []string
 	formulaCreateType string
 )
 
@@ -113,16 +115,24 @@ If no formula name is provided, uses the default formula configured in
 the rig's settings/config.json under workflow.default_formula.
 
 Options:
-  --pr=N      Run formula on GitHub PR #N
-  --rig=NAME  Target specific rig (default: current or gastown)
-  --dry-run   Show what would happen without executing
+  --pr=N        Run formula on GitHub PR #N
+  --rig=NAME    Target specific rig (default: current or gastown)
+  --agent=ALIAS Override agent/runtime for all legs (e.g., gemini, codex)
+  --dry-run     Show what would happen without executing
+
+Agent precedence (highest to lowest):
+  1. Per-leg 'agent' field in formula TOML
+  2. --agent CLI flag
+  3. Formula-level 'agent' field in formula TOML
+  4. Rig/town default agent (fallback)
 
 Examples:
   gt formula run shiny                    # Run formula in current rig
   gt formula run                          # Run default formula from rig config
   gt formula run shiny --pr=123           # Run on PR #123
   gt formula run security-audit --rig=beads  # Run in specific rig
-  gt formula run release --dry-run        # Preview execution`,
+  gt formula run release --dry-run        # Preview execution
+  gt formula run code-review --agent=gemini  # All legs use gemini`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runFormulaRun,
 }
@@ -159,6 +169,8 @@ func init() {
 	formulaRunCmd.Flags().IntVar(&formulaRunPR, "pr", 0, "GitHub PR number to run formula on")
 	formulaRunCmd.Flags().StringVar(&formulaRunRig, "rig", "", "Target rig (default: current or gastown)")
 	formulaRunCmd.Flags().BoolVar(&formulaRunDryRun, "dry-run", false, "Preview execution without running")
+	formulaRunCmd.Flags().StringVar(&formulaRunAgent, "agent", "", "Override agent/runtime for all legs (e.g., gemini, codex, claude-haiku)")
+	formulaRunCmd.Flags().StringSliceVar(&formulaRunFiles, "files", nil, "Files to pass to formula legs (available as {{.files}} in templates)")
 
 	// Create flags
 	formulaCreateCmd.Flags().StringVar(&formulaCreateType, "type", "task", "Formula type: task, workflow, or patrol")
@@ -292,6 +304,14 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 	if formulaRunPR > 0 {
 		fmt.Printf("  PR:      #%d\n", formulaRunPR)
 	}
+	// Show effective agent override (GH#2118)
+	effectiveAgent := formulaRunAgent
+	if effectiveAgent == "" {
+		effectiveAgent = f.Agent
+	}
+	if effectiveAgent != "" {
+		fmt.Printf("  Agent:   %s\n", effectiveAgent)
+	}
 
 	if f.Type == formula.TypeConvoy && len(f.Legs) > 0 {
 		// Generate review ID for dry-run display
@@ -346,12 +366,21 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 						"description": leg.Description,
 					},
 					"changed_files": changedFiles,
+					"files":         formulaRunFiles,
 				}
 				legPattern := renderTemplateOrDefault(f.Output.LegPattern, legCtx, leg.ID+"-findings.md")
 				outputPath := filepath.Join(outputDir, legPattern)
-				fmt.Printf("    • %s: %s\n      → %s\n", leg.ID, leg.Title, outputPath)
+				agentSuffix := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
+				if agentSuffix != "" {
+					agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
+				}
+				fmt.Printf("    • %s: %s%s\n      → %s\n", leg.ID, leg.Title, agentSuffix, outputPath)
 			} else {
-				fmt.Printf("    • %s: %s\n", leg.ID, leg.Title)
+				agentSuffix := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
+				if agentSuffix != "" {
+					agentSuffix = fmt.Sprintf(" [agent: %s]", agentSuffix)
+				}
+				fmt.Printf("    • %s: %s%s\n", leg.ID, leg.Title, agentSuffix)
 			}
 		}
 		if f.Synthesis != nil {
@@ -392,6 +421,11 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		formulaName, len(f.Legs), targetRig)
 	if formulaRunPR > 0 {
 		description += fmt.Sprintf("\nPR: #%d", formulaRunPR)
+	}
+
+	// Guard against flag-like convoy titles (gt-e0kx5)
+	if beads.IsFlagLikeTitle(convoyTitle) {
+		return fmt.Errorf("refusing to create formula convoy: title %q looks like a CLI flag", convoyTitle)
 	}
 
 	createArgs := []string{
@@ -474,7 +508,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 						"description": leg.Description,
 					},
 					"changed_files": changedFiles,
-					"files":         []string{}, // TODO: support --files flag
+					"files":         formulaRunFiles,
 				}
 
 				// Compute output path for this leg
@@ -510,20 +544,21 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			legArgs = append(legArgs, "--force")
 		}
 
-		legCmd := exec.Command("bd", legArgs...)
-		legCmd.Dir = townRoot
-		legCmd.Stderr = os.Stderr
-		if err := legCmd.Run(); err != nil {
+		if err := BdCmd(legArgs...).
+			WithAutoCommit().
+			Dir(townRoot).
+			Stderr(os.Stderr).
+			Run(); err != nil {
 			fmt.Printf("%s Failed to create leg bead for %s: %v\n",
 				style.Dim.Render("Warning:"), leg.ID, err)
 			continue
 		}
 
 		// Track the leg with the convoy
-		trackArgs := []string{"dep", "add", convoyID, legBeadID, "--type=tracks"}
-		trackCmd := exec.Command("bd", trackArgs...)
-		trackCmd.Dir = townRoot
-		if err := trackCmd.Run(); err != nil {
+		if err := BdCmd("dep", "add", convoyID, legBeadID, "--type=tracks").
+			WithAutoCommit().
+			Dir(townRoot).
+			Run(); err != nil {
 			fmt.Printf("%s Failed to track leg %s: %v\n",
 				style.Dim.Render("Warning:"), leg.ID, err)
 		}
@@ -553,25 +588,26 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			synArgs = append(synArgs, "--force")
 		}
 
-		synCmd := exec.Command("bd", synArgs...)
-		synCmd.Dir = townRoot
-		synCmd.Stderr = os.Stderr
-		if err := synCmd.Run(); err != nil {
+		if err := BdCmd(synArgs...).
+			WithAutoCommit().
+			Dir(townRoot).
+			Stderr(os.Stderr).
+			Run(); err != nil {
 			fmt.Printf("%s Failed to create synthesis bead: %v\n",
 				style.Dim.Render("Warning:"), err)
 		} else {
 			// Track synthesis with convoy
-			trackArgs := []string{"dep", "add", convoyID, synthesisBeadID, "--type=tracks"}
-			trackCmd := exec.Command("bd", trackArgs...)
-			trackCmd.Dir = townRoot
-			_ = trackCmd.Run()
+			_ = BdCmd("dep", "add", convoyID, synthesisBeadID, "--type=tracks").
+				WithAutoCommit().
+				Dir(townRoot).
+				Run()
 
 			// Add dependencies: synthesis depends on all legs
 			for _, legBeadID := range legBeads {
-				depArgs := []string{"dep", "add", synthesisBeadID, legBeadID}
-				depCmd := exec.Command("bd", depArgs...)
-				depCmd.Dir = townRoot
-				_ = depCmd.Run()
+				_ = BdCmd("dep", "add", synthesisBeadID, legBeadID).
+					WithAutoCommit().
+					Dir(townRoot).
+					Run()
 			}
 
 			fmt.Printf("  %s Created synthesis: %s\n", style.Dim.Render("★"), synthesisBeadID)
@@ -591,11 +627,17 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		// Build context message for the polecat
 		contextMsg := fmt.Sprintf("Convoy leg: %s\nFocus: %s", leg.Title, leg.Focus)
 
+		// Agent precedence (GH#2118): per-leg > CLI --agent > formula-level
+		legAgent := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
+
 		// Use gt sling with args for leg-specific context
 		slingArgs := []string{
 			"sling", legBeadID, targetRig,
 			"-a", leg.Description,
 			"-s", leg.Title,
+		}
+		if legAgent != "" {
+			slingArgs = append(slingArgs, "--agent", legAgent)
 		}
 
 		slingCmd := exec.Command("gt", slingArgs...)
@@ -846,6 +888,9 @@ func generateWorkflowTemplate(name string) string {
 	return fmt.Sprintf(`# Formula: %s
 # Type: workflow
 # Created by: gt formula create
+#
+# pour = true  — Steps materialized as sub-wisps (checkpoint recovery on crash)
+# pour = false — Steps read inline (root-only, restart on failure) [DEFAULT]
 
 description = """%s workflow.
 
@@ -964,6 +1009,19 @@ Perform the patrol inspection.
 # description = "Enable verbose output"
 # default = "false"
 `, name, title, name)
+}
+
+// resolveFormulaLegAgent returns the effective agent for a convoy leg using
+// the precedence: per-leg > CLI --agent > formula-level. Returns "" if no
+// agent override applies. See GH#2118.
+func resolveFormulaLegAgent(legAgent, cliAgent, formulaAgent string) string {
+	if legAgent != "" {
+		return legAgent
+	}
+	if cliAgent != "" {
+		return cliAgent
+	}
+	return formulaAgent
 }
 
 // promptYesNo asks the user a yes/no question

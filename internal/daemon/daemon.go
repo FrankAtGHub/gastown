@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	beadsdk "github.com/steveyegge/beads"
+	"gopkg.in/natefinch/lumberjack.v2"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/boot"
 	"github.com/steveyegge/gastown/internal/config"
@@ -30,6 +32,7 @@ import (
 	"github.com/steveyegge/gastown/internal/refinery"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/telemetry"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/util"
 	"github.com/steveyegge/gastown/internal/wisp"
@@ -48,9 +51,10 @@ type Daemon struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	curator       *feed.Curator
-	convoyWatcher *ConvoyWatcher
-	doltServer    *DoltServerManager
-	krcPruner     *KRCPruner
+	convoyManager *ConvoyManager
+	beadsStores   map[string]beadsdk.Storage
+	doltServer *DoltServerManager
+	krcPruner  *KRCPruner
 
 	// Mass death detection: track recent session deaths
 	deathsMu     sync.Mutex
@@ -71,8 +75,30 @@ type Daemon struct {
 	gtPath string
 	bdPath string
 
+	// Boot spawn cooldown: prevents Boot from spawning on every heartbeat tick.
+	// Only accessed from heartbeat loop goroutine - no sync needed.
+	bootLastSpawned time.Time
+
 	// Restart tracking with exponential backoff to prevent crash loops
 	restartTracker *RestartTracker
+
+	// telemetry exports metrics and logs to VictoriaMetrics / VictoriaLogs.
+	// Nil when telemetry is disabled (GT_OTEL_METRICS_URL / GT_OTEL_LOGS_URL not set).
+	otelProvider *telemetry.Provider
+	metrics      *daemonMetrics
+
+	// jsonlPushFailures tracks consecutive git push failures for JSONL backup.
+	// Only accessed from heartbeat loop goroutine - no sync needed.
+	jsonlPushFailures int
+
+	// lastDoctorMolTime tracks when the last mol-dog-doctor molecule was poured.
+	// Option B throttling: only pour when anomaly detected AND cooldown elapsed.
+	// Only accessed from heartbeat loop goroutine - no sync needed.
+	lastDoctorMolTime time.Time
+
+	// lastMaintenanceRun tracks when scheduled maintenance last ran.
+	// Only accessed from heartbeat loop goroutine - no sync needed.
+	lastMaintenanceRun time.Time
 }
 
 // sessionDeath records a detected session death for mass death analysis.
@@ -81,10 +107,16 @@ type sessionDeath struct {
 	timestamp   time.Time
 }
 
-// Mass death detection parameters
+// Mass death detection parameters — these are fallback defaults.
+// Prefer config.OperationalConfig.GetDaemonConfig() accessors when
+// a TownSettings is available (loaded via d.loadOperationalConfig()).
 const (
 	massDeathWindow    = 30 * time.Second // Time window to detect mass death
 	massDeathThreshold = 3                // Number of deaths to trigger alert
+
+	// doctorMolCooldown is the minimum interval between mol-dog-doctor molecules.
+	// Configurable via operational.daemon.doctor_mol_cooldown.
+	doctorMolCooldown = 5 * time.Minute
 )
 
 // New creates a new daemon instance.
@@ -95,19 +127,46 @@ func New(config *Config) (*Daemon, error) {
 		return nil, fmt.Errorf("creating daemon directory: %w", err)
 	}
 
-	// Open log file
-	logFile, err := os.OpenFile(config.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("opening log file: %w", err)
+	// Open log file with rotation (100MB max, 3 backups, 7 days, compressed)
+	logWriter := &lumberjack.Logger{
+		Filename:   config.LogFile,
+		MaxSize:    100, // megabytes
+		MaxBackups: 3,
+		MaxAge:     7, // days
+		Compress:   true,
 	}
 
-	logger := log.New(logFile, "", log.LstdFlags)
+	logger := log.New(logWriter, "", log.LstdFlags)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Load patrol config from mayor/daemon.json (optional - nil if missing)
+	// Initialize session prefix and agent registries from town root.
+	if err := session.InitRegistry(config.TownRoot); err != nil {
+		logger.Printf("Warning: failed to initialize town registry: %v", err)
+	}
+
+	// Set GT_TOWN_ROOT in tmux global environment so run-shell subprocesses
+	// (e.g., gt cycle next/prev) can find the workspace even when CWD is $HOME.
+	// Non-fatal: tmux server may not be running yet — daemon creates sessions shortly.
+	t := tmux.NewTmux()
+	if err := t.SetGlobalEnvironment("GT_TOWN_ROOT", config.TownRoot); err != nil {
+		logger.Printf("Warning: failed to set GT_TOWN_ROOT in tmux global env: %v", err)
+	}
+
+	// Load patrol config from mayor/daemon.json, ensuring lifecycle defaults
+	// are populated for any missing data maintenance tickers. Without this,
+	// opt-in patrols (compactor, reaper, doctor, JSONL backup, dolt backup)
+	// remain disabled if the file was created before they were implemented.
+	if err := EnsureLifecycleConfigFile(config.TownRoot); err != nil {
+		logger.Printf("Warning: failed to ensure lifecycle config: %v", err)
+	}
 	patrolConfig := LoadPatrolConfig(config.TownRoot)
 	if patrolConfig != nil {
 		logger.Printf("Loaded patrol config from %s", PatrolConfigFile(config.TownRoot))
+		// Propagate env vars from daemon.json to this process and all spawned sessions.
+		for k, v := range patrolConfig.Env {
+			os.Setenv(k, v)
+			logger.Printf("Set env %s=%s from daemon.json", k, v)
+		}
 	}
 
 	// Initialize Dolt server manager if configured
@@ -116,6 +175,25 @@ func New(config *Config) (*Daemon, error) {
 		doltServer = NewDoltServerManager(config.TownRoot, patrolConfig.Patrols.DoltServer, logger.Printf)
 		if doltServer.IsEnabled() {
 			logger.Printf("Dolt server management enabled (port %d)", patrolConfig.Patrols.DoltServer.Port)
+			// Propagate Dolt port to process env so AgentEnv() passes it to
+			// all spawned agent sessions. Without this, bd in agent sessions
+			// auto-starts rogue Dolt instances. (GH#2412)
+			portStr := strconv.Itoa(patrolConfig.Patrols.DoltServer.Port)
+			os.Setenv("GT_DOLT_PORT", portStr)
+			os.Setenv("BEADS_DOLT_PORT", portStr)
+		}
+	}
+
+	// Fallback: if GT_DOLT_PORT still isn't set (no DoltServerManager, daemon
+	// started independently of gt up), detect the port from dolt config.
+	// This ensures AgentEnv() always has the port for spawned sessions. (GH#2412)
+	if os.Getenv("GT_DOLT_PORT") == "" {
+		doltCfg := doltserver.DefaultConfig(config.TownRoot)
+		if doltCfg.Port > 0 {
+			portStr := strconv.Itoa(doltCfg.Port)
+			os.Setenv("GT_DOLT_PORT", portStr)
+			os.Setenv("BEADS_DOLT_PORT", portStr)
+			logger.Printf("Set GT_DOLT_PORT=%s from Dolt config (fallback)", portStr)
 		}
 	}
 
@@ -131,10 +209,41 @@ func New(config *Config) (*Daemon, error) {
 		logger.Printf("Warning: bd not found in PATH, subprocess calls may fail")
 	}
 
-	// Initialize restart tracker with exponential backoff
-	restartTracker := NewRestartTracker(config.TownRoot)
+	// Initialize restart tracker with exponential backoff.
+	// Parameters are configurable via patrols.restart_tracker in daemon.json.
+	var rtCfg RestartTrackerConfig
+	if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.RestartTracker != nil {
+		rtCfg = *patrolConfig.Patrols.RestartTracker
+	}
+	restartTracker := NewRestartTracker(config.TownRoot, rtCfg)
 	if err := restartTracker.Load(); err != nil {
 		logger.Printf("Warning: failed to load restart state: %v", err)
+	}
+
+	// Initialize OpenTelemetry (best-effort — telemetry failure never blocks startup).
+	// Activate by setting GT_OTEL_METRICS_URL and/or GT_OTEL_LOGS_URL.
+	otelProvider, otelErr := telemetry.Init(ctx, "gastown-daemon", "")
+	if otelErr != nil {
+		logger.Printf("Warning: telemetry init failed: %v", otelErr)
+	}
+	var dm *daemonMetrics
+	if otelProvider != nil {
+		dm, err = newDaemonMetrics()
+		if err != nil {
+			logger.Printf("Warning: failed to register daemon metrics: %v", err)
+			dm = nil
+		} else {
+			metricsURL := os.Getenv(telemetry.EnvMetricsURL)
+			if metricsURL == "" {
+				metricsURL = telemetry.DefaultMetricsURL
+			}
+			logsURL := os.Getenv(telemetry.EnvLogsURL)
+			if logsURL == "" {
+				logsURL = telemetry.DefaultLogsURL
+			}
+			logger.Printf("Telemetry active (metrics → %s, logs → %s)",
+				metricsURL, logsURL)
+		}
 	}
 
 	return &Daemon{
@@ -148,6 +257,8 @@ func New(config *Config) (*Daemon, error) {
 		gtPath:         gtPath,
 		bdPath:         bdPath,
 		restartTracker: restartTracker,
+		otelProvider:   otelProvider,
+		metrics:        dm,
 	}, nil
 }
 
@@ -178,16 +289,15 @@ func (d *Daemon) Run() error {
 	}
 
 	// Repair metadata.json for all rigs on startup.
-	// This auto-fixes stale jsonl_export values (e.g., "beads.jsonl" → "issues.jsonl")
-	// left behind by historical migrations.
+	// This ensures all rigs have proper Dolt server configuration.
 	if _, errs := doltserver.EnsureAllMetadata(d.config.TownRoot); len(errs) > 0 {
 		for _, e := range errs {
 			d.logger.Printf("Warning: metadata repair: %v", e)
 		}
 	}
 
-	// Write PID file
-	if err := os.WriteFile(d.config.PidFile, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
+	// Write PID file with nonce for ownership verification
+	if _, err := writePIDFile(d.config.PidFile, os.Getpid()); err != nil {
 		return fmt.Errorf("writing PID file: %w", err)
 	}
 	defer func() { _ = os.Remove(d.config.PidFile) }() // best-effort cleanup
@@ -208,10 +318,10 @@ func (d *Daemon) Run() error {
 
 	// Fixed recovery-focused heartbeat (no activity-based backoff)
 	// Normal wake is handled by feed subscription (bd activity --follow)
-	timer := time.NewTimer(recoveryHeartbeatInterval)
+	timer := time.NewTimer(d.recoveryHeartbeatInterval())
 	defer timer.Stop()
 
-	d.logger.Printf("Daemon running, recovery heartbeat interval %v", recoveryHeartbeatInterval)
+	d.logger.Printf("Daemon running, recovery heartbeat interval %v", d.recoveryHeartbeatInterval())
 
 	// Start feed curator goroutine
 	d.curator = feed.NewCurator(d.config.TownRoot)
@@ -221,12 +331,34 @@ func (d *Daemon) Run() error {
 		d.logger.Println("Feed curator started")
 	}
 
-	// Start convoy watcher for event-driven convoy completion
-	d.convoyWatcher = NewConvoyWatcher(d.config.TownRoot, d.logger.Printf, d.gtPath, d.bdPath)
-	if err := d.convoyWatcher.Start(); err != nil {
-		d.logger.Printf("Warning: failed to start convoy watcher: %v", err)
+	// Start convoy manager (event-driven + periodic stranded scan)
+	// Try opening beads stores eagerly; if Dolt isn't ready yet,
+	// pass the opener as a callback for lazy retry on each poll tick.
+	d.beadsStores = d.openBeadsStores()
+	isRigParked := func(rigName string) bool {
+		ok, _ := d.isRigOperational(rigName)
+		return !ok
+	}
+	var storeOpener func() map[string]beadsdk.Storage
+	if len(d.beadsStores) == 0 {
+		storeOpener = d.openBeadsStores
+	}
+	d.convoyManager = NewConvoyManager(d.config.TownRoot, d.logger.Printf, d.gtPath, 0, d.beadsStores, storeOpener, isRigParked)
+	if err := d.convoyManager.Start(); err != nil {
+		d.logger.Printf("Warning: failed to start convoy manager: %v", err)
 	} else {
-		d.logger.Println("Convoy watcher started")
+		d.logger.Println("Convoy manager started")
+	}
+
+	// Wire a recovery callback so that when Dolt transitions from unhealthy
+	// back to healthy, the convoy manager runs a sweep to catch any convoys
+	// that completed during the outage and were missed by the event poller.
+	if d.doltServer != nil {
+		cm := d.convoyManager
+		d.doltServer.SetRecoveryCallback(func() {
+			d.logger.Printf("Dolt recovery detected: triggering convoy recovery sweep")
+			cm.scan()
+		})
 	}
 
 	// Start KRC pruner for automatic ephemeral data cleanup
@@ -268,6 +400,80 @@ func (d *Daemon) Run() error {
 		d.logger.Printf("Dolt remotes push ticker started (interval %v)", interval)
 	}
 
+	// Start dedicated Dolt backup ticker if configured.
+	// Runs filesystem backup sync (dolt backup sync) for production databases.
+	var doltBackupTicker *time.Ticker
+	var doltBackupChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "dolt_backup") {
+		interval := doltBackupInterval(d.patrolConfig)
+		doltBackupTicker = time.NewTicker(interval)
+		doltBackupChan = doltBackupTicker.C
+		defer doltBackupTicker.Stop()
+		d.logger.Printf("Dolt backup ticker started (interval %v)", interval)
+	}
+
+	// Start JSONL git backup ticker if configured.
+	// Exports issues to JSONL, scrubs ephemeral data, pushes to git repo.
+	var jsonlGitBackupTicker *time.Ticker
+	var jsonlGitBackupChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "jsonl_git_backup") {
+		interval := jsonlGitBackupInterval(d.patrolConfig)
+		jsonlGitBackupTicker = time.NewTicker(interval)
+		jsonlGitBackupChan = jsonlGitBackupTicker.C
+		defer jsonlGitBackupTicker.Stop()
+		d.logger.Printf("JSONL git backup ticker started (interval %v)", interval)
+	}
+
+	// Start wisp reaper ticker if configured.
+	// Closes stale wisps (abandoned molecule steps, old patrol data) across all databases.
+	var wispReaperTicker *time.Ticker
+	var wispReaperChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "wisp_reaper") {
+		interval := wispReaperInterval(d.patrolConfig)
+		wispReaperTicker = time.NewTicker(interval)
+		wispReaperChan = wispReaperTicker.C
+		defer wispReaperTicker.Stop()
+		d.logger.Printf("Wisp reaper ticker started (interval %v)", interval)
+	}
+
+	// Start doctor dog ticker if configured.
+	// Health monitor: TCP check, latency, DB count, gc, zombie detection, backup/disk checks.
+	var doctorDogTicker *time.Ticker
+	var doctorDogChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "doctor_dog") {
+		interval := doctorDogInterval(d.patrolConfig)
+		doctorDogTicker = time.NewTicker(interval)
+		doctorDogChan = doctorDogTicker.C
+		defer doctorDogTicker.Stop()
+		d.logger.Printf("Doctor dog ticker started (interval %v)", interval)
+	}
+
+	// Start compactor dog ticker if configured.
+	// Flattens Dolt commit history to reclaim graph storage (daily).
+	var compactorDogTicker *time.Ticker
+	var compactorDogChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "compactor_dog") {
+		interval := compactorDogInterval(d.patrolConfig)
+		compactorDogTicker = time.NewTicker(interval)
+		compactorDogChan = compactorDogTicker.C
+		defer compactorDogTicker.Stop()
+		d.logger.Printf("Compactor dog ticker started (interval %v)", interval)
+	}
+
+	// Start scheduled maintenance ticker if configured.
+	// Checks periodically whether we're in the maintenance window and
+	// runs `gt maintain --force` when commit counts exceed threshold.
+	var scheduledMaintenanceTicker *time.Ticker
+	var scheduledMaintenanceChan <-chan time.Time
+	if IsPatrolEnabled(d.patrolConfig, "scheduled_maintenance") {
+		interval := maintenanceCheckInterval(d.patrolConfig)
+		scheduledMaintenanceTicker = time.NewTicker(interval)
+		scheduledMaintenanceChan = scheduledMaintenanceTicker.C
+		defer scheduledMaintenanceTicker.Stop()
+		window := maintenanceWindow(d.patrolConfig)
+		d.logger.Printf("Scheduled maintenance ticker started (check interval %v, window %s)", interval, window)
+	}
+
 	// Note: PATCH-010 uses per-session hooks in deacon/manager.go (SetAutoRespawnHook).
 	// Global pane-died hooks don't fire reliably in tmux 3.2a, so we rely on the
 	// per-session approach which has been tested to work for continuous recovery.
@@ -286,6 +492,14 @@ func (d *Daemon) Run() error {
 				// Lifecycle signal: immediate lifecycle processing (from gt handoff)
 				d.logger.Println("Received lifecycle signal, processing lifecycle requests immediately")
 				d.processLifecycleRequests()
+			} else if isReloadRestartSignal(sig) {
+				// Reload restart tracker from disk (from 'gt daemon clear-backoff')
+				d.logger.Println("Received reload-restart signal, reloading restart tracker from disk")
+				if d.restartTracker != nil {
+					if err := d.restartTracker.Load(); err != nil {
+						d.logger.Printf("Warning: failed to reload restart tracker: %v", err)
+					}
+				}
 			} else {
 				d.logger.Printf("Received signal %v, shutting down", sig)
 				return d.shutdown(state)
@@ -305,20 +519,64 @@ func (d *Daemon) Run() error {
 				d.pushDoltRemotes()
 			}
 
+		case <-doltBackupChan:
+			// Periodic Dolt filesystem backup — syncs production databases to
+			// local backup directory on a 15-minute cadence.
+			if !d.isShutdownInProgress() {
+				d.syncDoltBackups()
+			}
+
+		case <-jsonlGitBackupChan:
+			// Periodic JSONL git backup — exports issues, scrubs ephemeral data,
+			// commits and pushes to git repo.
+			if !d.isShutdownInProgress() {
+				d.syncJsonlGitBackup()
+			}
+
+		case <-wispReaperChan:
+			// Periodic wisp reaper — closes stale wisps (abandoned molecule steps,
+			// old patrol data) to prevent unbounded table growth (Clown Show audit).
+			if !d.isShutdownInProgress() {
+				d.reapWisps()
+			}
+
+		case <-doctorDogChan:
+			// Doctor dog — comprehensive Dolt health monitor: connectivity, latency,
+			// gc, zombie detection, backup staleness, and disk usage checks.
+			if !d.isShutdownInProgress() {
+				d.runDoctorDog()
+			}
+
+		case <-compactorDogChan:
+			// Compactor dog — flattens Dolt commit history on production databases.
+			// Reclaims commit graph storage, then runs gc to reclaim chunks.
+			if !d.isShutdownInProgress() {
+				d.runCompactorDog()
+			}
+
+		case <-scheduledMaintenanceChan:
+			// Scheduled maintenance — checks if we're in the maintenance window
+			// and runs `gt maintain --force` when commit counts exceed threshold.
+			if !d.isShutdownInProgress() {
+				d.runScheduledMaintenance()
+			}
+
 		case <-timer.C:
 			d.heartbeat(state)
 
 			// Fixed recovery interval (no activity-based backoff)
-			timer.Reset(recoveryHeartbeatInterval)
+			timer.Reset(d.recoveryHeartbeatInterval())
 		}
 	}
 }
 
-// recoveryHeartbeatInterval is the fixed interval for recovery-focused daemon.
+// recoveryHeartbeatInterval returns the config-driven recovery heartbeat interval.
 // Normal wake is handled by feed subscription (bd activity --follow).
 // The daemon is a safety net for dead sessions, GUPP violations, and orphaned work.
-// 3 minutes is fast enough to detect stuck agents promptly while avoiding excessive overhead.
-const recoveryHeartbeatInterval = 3 * time.Minute
+// Default: 3 minutes — fast enough to detect stuck agents promptly.
+func (d *Daemon) recoveryHeartbeatInterval() time.Duration {
+	return d.loadOperationalConfig().GetDaemonConfig().RecoveryHeartbeatIntervalD()
+}
 
 // heartbeat performs one heartbeat cycle.
 // The daemon is recovery-focused: it ensures agents are running and detects failures.
@@ -336,7 +594,18 @@ func (d *Daemon) heartbeat(state *State) {
 		return
 	}
 
+	d.metrics.recordHeartbeat(d.ctx)
 	d.logger.Println("Heartbeat starting (recovery-focused)")
+
+	// 0a. Reload prefix registry so new/changed rigs get correct session names.
+	// Without this, rigs added after daemon startup get the "gt" default prefix,
+	// causing ghost sessions like gt-witness instead of ti-witness. (hq-ouz, hq-eqf, hq-3i4)
+	if err := session.InitRegistry(d.config.TownRoot); err != nil {
+		d.logger.Printf("Warning: failed to reload prefix registry: %v", err)
+	}
+
+	// 0b. Kill ghost sessions left over from stale registry (default "gt" prefix).
+	d.killDefaultPrefixGhosts()
 
 	// 0. Ensure Dolt server is running (if configured)
 	// This must happen before beads operations that depend on Dolt.
@@ -380,8 +649,13 @@ func (d *Daemon) heartbeat(state *State) {
 
 	// 5. Ensure Refineries are running for all rigs (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
+	// Pressure-gated: refineries consume API credits, defer when system is loaded.
 	if IsPatrolEnabled(d.patrolConfig, "refinery") {
-		d.ensureRefineriesRunning()
+		if p := d.checkPressure("refinery"); !p.OK {
+			d.logger.Printf("Deferring refinery spawn: %s", p.Reason)
+		} else {
+			d.ensureRefineriesRunning()
+		}
 	} else {
 		d.logger.Printf("Refinery patrol disabled in config, skipping")
 		// Kill leftover refinery sessions from before patrol was disabled. (hq-2mstj)
@@ -391,12 +665,21 @@ func (d *Daemon) heartbeat(state *State) {
 	// 6. Ensure Mayor is running (restart if dead)
 	d.ensureMayorRunning()
 
-	// 7. Trigger pending polecat spawns (bootstrap mode - ZFC violation acceptable)
-	// This ensures polecats get nudged even when Deacon isn't in a patrol cycle.
-	// Uses regex-based WaitForRuntimeReady, which is acceptable for daemon bootstrap.
-	d.triggerPendingSpawns()
+	// 6.5. Handle Dog lifecycle: cleanup stuck dogs and dispatch plugins
+	// Pressure-gated: dog dispatch spawns new agent sessions.
+	if IsPatrolEnabled(d.patrolConfig, "handler") {
+		if p := d.checkPressure("dog"); !p.OK {
+			d.logger.Printf("Deferring dog dispatch: %s", p.Reason)
+			// Still run cleanup phases (stuck/stale/idle) — only skip dispatch
+			d.handleDogsCleanupOnly()
+		} else {
+			d.handleDogs()
+		}
+	} else {
+		d.logger.Printf("Handler patrol disabled in config, skipping")
+	}
 
-	// 8. Process lifecycle requests
+	// 7. Process lifecycle requests
 	d.processLifecycleRequests()
 
 	// 9. (Removed) Stale agent check - violated "discover, don't track"
@@ -411,21 +694,34 @@ func (d *Daemon) heartbeat(state *State) {
 	// This validates tmux sessions are still alive for polecats with work-on-hook
 	d.checkPolecatSessionHealth()
 
+	// 12b. Reap idle polecat sessions to prevent API slot burn.
+	// Polecats transition to IDLE after gt done but sessions stay alive.
+	// Kill sessions that have been idle longer than the configured threshold.
+	d.reapIdlePolecats()
+
 	// 13. Clean up orphaned claude subagent processes (memory leak prevention)
 	// These are Task tool subagents that didn't clean up after completion.
 	// This is a safety net - Deacon patrol also does this more frequently.
 	d.cleanupOrphanedProcesses()
 
-	// 13. Clean up errant .beads directories in town-level service directories.
-	// Mayor and Deacon should use town beads (~/gt/.beads) via parent directory walk.
-	// If they have local .beads with databases, bd uses the wrong database.
-	d.cleanupTownServiceBeads()
-
-	// 14. Prune stale local polecat tracking branches across all rig clones.
+	// 13. Prune stale local polecat tracking branches across all rig clones.
 	// When polecats push branches to origin, other clones create local tracking
 	// branches via git fetch. After merge, remote branches are deleted but local
 	// branches persist indefinitely. This cleans them up periodically.
 	d.pruneStaleBranches()
+
+	// 14. Dispatch scheduled work (capacity-controlled polecat dispatch).
+	// Shells out to `gt scheduler run` to avoid circular import between daemon and cmd.
+	// Pressure-gated: polecats are the primary resource consumers.
+	if p := d.checkPressure("polecat"); !p.OK {
+		d.logger.Printf("Deferring polecat dispatch: %s", p.Reason)
+	} else {
+		d.dispatchQueuedWork()
+	}
+
+	// 15. Rotate oversized Dolt logs (copytruncate for child process fds).
+	// daemon.log uses lumberjack for automatic rotation; this handles Dolt server logs.
+	d.rotateOversizedLogs()
 
 	// Update state
 	state.LastHeartbeat = time.Now()
@@ -437,8 +733,23 @@ func (d *Daemon) heartbeat(state *State) {
 	d.logger.Printf("Heartbeat complete (#%d)", state.HeartbeatCount)
 }
 
+// rotateOversizedLogs checks Dolt server log files and rotates any that exceed
+// the size threshold. Uses copytruncate which is safe for logs held open by
+// child processes. Runs every heartbeat but is cheap (just stat calls).
+func (d *Daemon) rotateOversizedLogs() {
+	result := RotateLogs(d.config.TownRoot)
+	for _, path := range result.Rotated {
+		d.logger.Printf("log_rotation: rotated %s", path)
+	}
+	for _, err := range result.Errors {
+		d.logger.Printf("log_rotation: error: %v", err)
+	}
+}
+
 // ensureDoltServerRunning ensures the Dolt SQL server is running if configured.
 // This provides the backend for beads database access in server mode.
+// Option B throttling: pours a mol-dog-doctor molecule only when health check
+// warnings are detected, with a 5-minute cooldown to avoid wisp spam.
 func (d *Daemon) ensureDoltServerRunning() {
 	if d.doltServer == nil || !d.doltServer.IsEnabled() {
 		return
@@ -447,7 +758,48 @@ func (d *Daemon) ensureDoltServerRunning() {
 	if err := d.doltServer.EnsureRunning(); err != nil {
 		d.logger.Printf("Error ensuring Dolt server is running: %v", err)
 	}
+
+	// Option B throttling: pour mol-dog-doctor only on anomaly with cooldown.
+	if warnings := d.doltServer.LastWarnings(); len(warnings) > 0 {
+		if time.Since(d.lastDoctorMolTime) >= doctorMolCooldown {
+			d.lastDoctorMolTime = time.Now()
+			go d.pourDoctorMolecule(warnings)
+		}
+	}
+
+	// Update OTel gauges with the latest Dolt health snapshot.
+	if d.metrics != nil {
+		h := doltserver.GetHealthMetrics(d.config.TownRoot)
+		d.metrics.updateDoltHealth(
+			int64(h.Connections),
+			int64(h.MaxConnections),
+			float64(h.QueryLatency.Milliseconds()),
+			h.DiskUsageBytes,
+			h.Healthy,
+		)
+	}
 }
+
+// pourDoctorMolecule creates a mol-dog-doctor molecule to track a health anomaly.
+// Runs asynchronously — molecule lifecycle is observability, not control flow.
+func (d *Daemon) pourDoctorMolecule(warnings []string) {
+	mol := d.pourDogMolecule(constants.MolDogDoctor, map[string]string{
+		"port": strconv.Itoa(d.doltServer.config.Port),
+	})
+	defer mol.close()
+
+	// Step 1: probe — connectivity was already checked (we got here because it passed).
+	mol.closeStep("probe")
+
+	// Step 2: inspect — resource checks produced the warnings.
+	mol.closeStep("inspect")
+
+	// Step 3: report — log the warning summary.
+	summary := strings.Join(warnings, "; ")
+	d.logger.Printf("Doctor molecule: %d warning(s): %s", len(warnings), summary)
+	mol.closeStep("report")
+}
+
 
 // checkAllRigsDolt verifies all rigs are using the Dolt backend.
 func (d *Daemon) checkAllRigsDolt() error {
@@ -511,12 +863,21 @@ func (d *Daemon) getDeaconSessionName() string {
 // Boot is a fresh-each-tick watchdog that decides whether to start/wake/nudge
 // the Deacon, centralizing the "when to wake" decision in an agent.
 // In degraded mode (no tmux), falls back to mechanical checks.
-func (d *Daemon) ensureBootRunning() {
-	b := boot.New(d.config.TownRoot)
+// bootSpawnCooldown returns the config-driven boot spawn cooldown.
+// Boot triage runs are expensive (AI reasoning); if one just ran, skip.
+func (d *Daemon) bootSpawnCooldown() time.Duration {
+	return d.loadOperationalConfig().GetDaemonConfig().BootSpawnCooldownD()
+}
 
-	// Boot is ephemeral - always spawn fresh each tick.
-	// spawnTmux() kills any existing session before spawning, ensuring
-	// Boot never accumulates context across triage cycles.
+func (d *Daemon) ensureBootRunning() {
+	// Cooldown gate: skip if Boot was spawned recently (fixes #2084)
+	if !d.bootLastSpawned.IsZero() && time.Since(d.bootLastSpawned) < d.bootSpawnCooldown() {
+		d.logger.Printf("Boot spawned %s ago, within cooldown (%s), skipping",
+			time.Since(d.bootLastSpawned).Round(time.Second), d.bootSpawnCooldown())
+		return
+	}
+
+	b := boot.New(d.config.TownRoot)
 
 	// Check for degraded mode
 	degraded := os.Getenv("GT_DEGRADED") == "true"
@@ -536,6 +897,7 @@ func (d *Daemon) ensureBootRunning() {
 		return
 	}
 
+	d.bootLastSpawned = time.Now()
 	d.logger.Println("Boot spawned successfully")
 }
 
@@ -544,7 +906,6 @@ func (d *Daemon) ensureBootRunning() {
 func (d *Daemon) runDegradedBootTriage(b *boot.Boot) {
 	startTime := time.Now()
 	status := &boot.Status{
-		Running:   true,
 		StartedAt: startTime,
 	}
 
@@ -563,7 +924,6 @@ func (d *Daemon) runDegradedBootTriage(b *boot.Boot) {
 		status.LastAction = "nothing"
 	}
 
-	status.Running = false
 	status.CompletedAt = time.Now()
 
 	if err := b.SaveStatus(status); err != nil {
@@ -614,13 +974,17 @@ func (d *Daemon) ensureDeaconRunning() {
 	// Track when we started the Deacon to prevent race condition in checkDeaconHeartbeat.
 	// The heartbeat file will still be stale until the Deacon runs a full patrol cycle.
 	d.deaconLastStarted = time.Now()
+	d.metrics.recordRestart(d.ctx, "deacon")
+	telemetry.RecordDaemonRestart(d.ctx, "deacon")
 	d.logger.Println("Deacon started successfully")
 }
 
-// deaconGracePeriod is the time to wait after starting a Deacon before checking heartbeat.
+// deaconGracePeriod returns the config-driven deacon grace period.
 // The Deacon needs time to initialize Claude, run SessionStart hooks, execute gt prime,
-// run a patrol cycle, and write a fresh heartbeat. 5 minutes is conservative.
-const deaconGracePeriod = 5 * time.Minute
+// run a patrol cycle, and write a fresh heartbeat. Default: 5 minutes.
+func (d *Daemon) deaconGracePeriod() time.Duration {
+	return d.loadOperationalConfig().GetDaemonConfig().DeaconGracePeriodD()
+}
 
 // checkDeaconHeartbeat checks if the Deacon is making progress.
 // This is a belt-and-suspenders fallback in case Boot doesn't detect stuck states.
@@ -632,6 +996,14 @@ const deaconGracePeriod = 5 * time.Minute
 // - Grace period only applies if heartbeat is from BEFORE we started Deacon
 // - If heartbeat is from AFTER start but stale, Deacon is stuck
 func (d *Daemon) checkDeaconHeartbeat() {
+	// Respect crash-loop guard: if the restart tracker says Deacon is in a
+	// crash loop, do not kill the session — the guard is deliberately holding
+	// off restarts to break the cycle. (Fixes #2086)
+	if d.restartTracker != nil && d.restartTracker.IsInCrashLoop("deacon") {
+		d.logger.Printf("Deacon is in crash-loop state, skipping heartbeat kill check")
+		return
+	}
+
 	// Always read heartbeat first (PATCH-005)
 	hb := deacon.ReadHeartbeat(d.config.TownRoot)
 
@@ -643,30 +1015,30 @@ func (d *Daemon) checkDeaconHeartbeat() {
 
 		if hb == nil {
 			// No heartbeat file exists
-			if timeSinceStart < deaconGracePeriod {
+			if timeSinceStart < d.deaconGracePeriod() {
 				d.logger.Printf("Deacon started %s ago, awaiting first heartbeat...",
 					timeSinceStart.Round(time.Second))
 				return
 			}
 			// Grace period expired without any heartbeat - Deacon failed to start
-			d.logger.Printf("Deacon started %s ago but hasn't written heartbeat - restarting",
-				timeSinceStart.Round(time.Minute))
-			d.restartStuckDeacon(sessionName)
+			// Detection only: stuck-agent-dog plugin handles context-aware restart
+			d.logger.Printf("STUCK DEACON: started %s ago but hasn't written heartbeat (session: %s)",
+				timeSinceStart.Round(time.Minute), sessionName)
 			return
 		}
 
 		// Heartbeat exists - check if it's from BEFORE we started this Deacon
 		if hb.Timestamp.Before(d.deaconLastStarted) {
 			// Heartbeat is stale (from before restart)
-			if timeSinceStart < deaconGracePeriod {
+			if timeSinceStart < d.deaconGracePeriod() {
 				d.logger.Printf("Deacon started %s ago, heartbeat is pre-restart, awaiting fresh heartbeat...",
 					timeSinceStart.Round(time.Second))
 				return
 			}
 			// Grace period expired but heartbeat still from before start
-			d.logger.Printf("Deacon started %s ago but heartbeat still pre-restart - Deacon stuck at startup",
-				timeSinceStart.Round(time.Minute))
-			d.restartStuckDeacon(sessionName)
+			// Detection only: stuck-agent-dog plugin handles context-aware restart
+			d.logger.Printf("STUCK DEACON: started %s ago but heartbeat still pre-restart (session: %s)",
+				timeSinceStart.Round(time.Minute), sessionName)
 			return
 		}
 
@@ -683,7 +1055,7 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	age := hb.Age()
 
 	// If heartbeat is fresh, nothing to do
-	if !hb.ShouldPoke() {
+	if !hb.IsVeryStale() {
 		return
 	}
 
@@ -706,7 +1078,8 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	// PATCH-002: Reduced from 30m to 10m for faster recovery.
 	// Must be > backoff-max (5m) to avoid false positive kills during legitimate sleep.
 	if age > 10*time.Minute {
-		d.restartStuckDeacon(sessionName)
+		// Detection only: stuck-agent-dog plugin handles context-aware restart
+		d.logger.Printf("STUCK DEACON: heartbeat stale for %s, session %s needs restart", age.Round(time.Minute), sessionName)
 	} else {
 		// Stuck but not critically - nudge to wake up
 		d.logger.Printf("Deacon stuck for %s - nudging session", age.Round(time.Minute))
@@ -716,20 +1089,6 @@ func (d *Daemon) checkDeaconHeartbeat() {
 	}
 }
 
-// restartStuckDeacon kills and restarts a stuck Deacon session.
-// Extracted for reuse by PATCH-005 grace period logic.
-func (d *Daemon) restartStuckDeacon(sessionName string) {
-	// Check if session exists before trying to kill
-	hasSession, _ := d.tmux.HasSession(sessionName)
-	if hasSession {
-		d.logger.Printf("Killing stuck Deacon session %s", sessionName)
-		if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
-			d.logger.Printf("Error killing stuck Deacon: %v", err)
-		}
-	}
-	// Spawn new Deacon immediately
-	d.ensureDeaconRunning()
-}
 
 // ensureWitnessesRunning ensures witnesses are running for configured rigs.
 // Called on each heartbeat to maintain witness patrol loops.
@@ -739,6 +1098,23 @@ func (d *Daemon) ensureWitnessesRunning() {
 	for _, rigName := range rigs {
 		d.ensureWitnessRunning(rigName)
 	}
+}
+
+// hasPendingEvents checks if there are pending .event files in the given channel directory.
+// Used to gate agent spawning: don't burn API credits starting a Claude session when
+// there's nothing to process. The agent's await-event handles the actual consumption.
+func (d *Daemon) hasPendingEvents(channel string) bool {
+	eventDir := filepath.Join(d.config.TownRoot, "events", channel)
+	entries, err := os.ReadDir(eventDir)
+	if err != nil {
+		return false // Directory doesn't exist or unreadable = no pending events
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".event") {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureWitnessRunning ensures the witness for a specific rig is running.
@@ -759,6 +1135,12 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 	}
 	mgr := witness.NewManager(r)
 
+	// NOTE: Hung session detection removed for witnesses (serial killer bug).
+	// Idle witnesses legitimately produce no tmux output while waiting for work.
+	// The deacon's patrol health-scan step handles stuck detection with proper
+	// context (checks for active work before declaring something stuck).
+	// See: daemon.log "is hung (no activity for 30m0s), killing for restart"
+
 	if err := mgr.Start(false, "", nil); err != nil {
 		if err == witness.ErrAlreadyRunning {
 			// Already running - this is the expected case
@@ -769,6 +1151,8 @@ func (d *Daemon) ensureWitnessRunning(rigName string) {
 		return
 	}
 
+	d.metrics.recordRestart(d.ctx, "witness")
+	telemetry.RecordDaemonRestart(d.ctx, "witness-"+rigName)
 	d.logger.Printf("Witness session for %s started successfully", rigName)
 }
 
@@ -791,6 +1175,23 @@ func (d *Daemon) ensureRefineryRunning(rigName string) {
 		return
 	}
 
+	// Event gate: don't spawn a new Claude session when there's nothing to process.
+	// If a refinery session is already running, Start() returns ErrAlreadyRunning (cheap).
+	// But spawning a NEW session with an empty queue burns API credits for nothing.
+	// The refinery formula uses await-event internally, so it will wake when events appear.
+	if !d.hasPendingEvents("refinery") {
+		// Check if session already exists before skipping — let running sessions continue
+		r := &rig.Rig{
+			Name: rigName,
+			Path: filepath.Join(d.config.TownRoot, rigName),
+		}
+		mgr := refinery.NewManager(r)
+		if running, _ := mgr.IsRunning(); !running {
+			d.logger.Printf("No pending refinery events and no session running for %s, skipping spawn", rigName)
+			return
+		}
+	}
+
 	// Manager.Start() handles: zombie detection, session creation, env vars, theming,
 	// WaitForClaudeReady, and crucially - startup/propulsion nudges (GUPP).
 	// It returns ErrAlreadyRunning if Claude is already running in tmux.
@@ -799,6 +1200,12 @@ func (d *Daemon) ensureRefineryRunning(rigName string) {
 		Path: filepath.Join(d.config.TownRoot, rigName),
 	}
 	mgr := refinery.NewManager(r)
+
+	// NOTE: Hung session detection removed for refineries (serial killer bug).
+	// Idle refineries legitimately produce no tmux output while waiting for MRs.
+	// The deacon's patrol health-scan step handles stuck detection with proper
+	// context (checks for active work before declaring something stuck).
+	// See: daemon.log "is hung (no activity for 30m0s), killing for restart"
 
 	if err := mgr.Start(false, ""); err != nil {
 		if err == refinery.ErrAlreadyRunning {
@@ -810,6 +1217,8 @@ func (d *Daemon) ensureRefineryRunning(rigName string) {
 		return
 	}
 
+	d.metrics.recordRestart(d.ctx, "refinery")
+	telemetry.RecordDaemonRestart(d.ctx, "refinery-"+rigName)
 	d.logger.Printf("Refinery session for %s started successfully", rigName)
 }
 
@@ -849,7 +1258,7 @@ func (d *Daemon) killDeaconSessions() {
 // Called when the witness patrol is disabled. (hq-2mstj)
 func (d *Daemon) killWitnessSessions() {
 	for _, rigName := range d.getKnownRigs() {
-		name := session.WitnessSessionName(rigName)
+		name := session.WitnessSessionName(session.PrefixFor(rigName))
 		exists, _ := d.tmux.HasSession(name)
 		if exists {
 			d.logger.Printf("Killing leftover %s session (patrol disabled)", name)
@@ -864,7 +1273,7 @@ func (d *Daemon) killWitnessSessions() {
 // Called when the refinery patrol is disabled. (hq-2mstj)
 func (d *Daemon) killRefinerySessions() {
 	for _, rigName := range d.getKnownRigs() {
-		name := session.RefinerySessionName(rigName)
+		name := session.RefinerySessionName(session.PrefixFor(rigName))
 		exists, _ := d.tmux.HasSession(name)
 		if exists {
 			d.logger.Printf("Killing leftover %s session (patrol disabled)", name)
@@ -873,6 +1282,124 @@ func (d *Daemon) killRefinerySessions() {
 			}
 		}
 	}
+}
+
+// killDefaultPrefixGhosts kills tmux sessions that use the default "gt" prefix
+// for roles that should use a rig-specific prefix. These ghost sessions appear
+// when the daemon starts before a rig is registered or when the registry was
+// stale. After a registry reload, any "gt-witness", "gt-refinery", or "gt-*"
+// sessions that correspond to rigs with their own prefix are stale duplicates.
+// Fix for: hq-ouz, hq-eqf, hq-3i4.
+func (d *Daemon) killDefaultPrefixGhosts() {
+	reg := session.DefaultRegistry()
+	allRigs := reg.AllRigs() // rigName → shortPrefix
+	if len(allRigs) == 0 {
+		return
+	}
+
+	// Check if any rig actually has "gt" as its registered prefix.
+	// If so, gt-witness is legitimate for that rig — don't kill it.
+	gtIsLegitimate := false
+	for _, prefix := range allRigs {
+		if prefix == session.DefaultPrefix {
+			gtIsLegitimate = true
+			break
+		}
+	}
+	if gtIsLegitimate {
+		return
+	}
+
+	// Kill ghost sessions using the default "gt" prefix for patrol roles.
+	for _, role := range []string{"witness", "refinery"} {
+		ghostName := fmt.Sprintf("%s-%s", session.DefaultPrefix, role)
+		exists, _ := d.tmux.HasSession(ghostName)
+		if exists {
+			d.logger.Printf("Killing ghost session %s (default prefix, stale registry artifact)", ghostName)
+			if err := d.tmux.KillSessionWithProcesses(ghostName); err != nil {
+				d.logger.Printf("Error killing ghost session %s: %v", ghostName, err)
+			}
+		}
+	}
+
+	// Also check for ghost polecat sessions: gt-<polecatName> where the polecat
+	// actually belongs to a rig with a different prefix.
+	for _, rigName := range d.getKnownRigs() {
+		rigPrefix := session.PrefixFor(rigName)
+		if rigPrefix == session.DefaultPrefix {
+			continue // This rig uses "gt" — its sessions are fine
+		}
+		rigPath := filepath.Join(d.config.TownRoot, rigName, "polecats")
+		entries, err := os.ReadDir(rigPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			polecatName := entry.Name()
+			ghostName := fmt.Sprintf("%s-%s", session.DefaultPrefix, polecatName)
+			exists, _ := d.tmux.HasSession(ghostName)
+			if exists {
+				// Verify the correct session isn't also running (avoid killing legit sessions)
+				correctName := session.PolecatSessionName(rigPrefix, polecatName)
+				correctExists, _ := d.tmux.HasSession(correctName)
+				if !correctExists {
+					// Ghost is the only session — it might be doing real work.
+					// Log but don't kill; the registry reload will prevent new ghosts.
+					d.logger.Printf("Ghost polecat session %s found (should be %s), not killing (may have active work)", ghostName, correctName)
+				} else {
+					// Both exist — ghost is definitely a duplicate, kill it.
+					d.logger.Printf("Killing duplicate ghost polecat session %s (correct session %s exists)", ghostName, correctName)
+					if err := d.tmux.KillSessionWithProcesses(ghostName); err != nil {
+						d.logger.Printf("Error killing ghost session %s: %v", ghostName, err)
+					}
+				}
+			}
+		}
+	}
+}
+
+// openBeadsStores opens beads stores for the town (hq) and all known rigs.
+// Returns a map keyed by "hq" for town-level and rig names for per-rig stores.
+// Stores that fail to open are logged and skipped.
+func (d *Daemon) openBeadsStores() map[string]beadsdk.Storage {
+	stores := make(map[string]beadsdk.Storage)
+
+	// Town-level store (hq)
+	hqBeadsDir := filepath.Join(d.config.TownRoot, ".beads")
+	if store, err := beadsdk.OpenFromConfig(d.ctx, hqBeadsDir); err == nil {
+		stores["hq"] = store
+	} else {
+		d.logger.Printf("Convoy: hq beads store unavailable: %s", util.FirstLine(err.Error()))
+	}
+
+	// Per-rig stores
+	for _, rigName := range d.getKnownRigs() {
+		beadsDir := doltserver.FindRigBeadsDir(d.config.TownRoot, rigName)
+		if beadsDir == "" {
+			continue
+		}
+		store, err := beadsdk.OpenFromConfig(d.ctx, beadsDir)
+		if err != nil {
+			d.logger.Printf("Convoy: %s beads store unavailable: %s", rigName, util.FirstLine(err.Error()))
+			continue
+		}
+		stores[rigName] = store
+	}
+
+	if len(stores) == 0 {
+		d.logger.Printf("Convoy: no beads stores available, event polling disabled")
+		return nil
+	}
+
+	names := make([]string, 0, len(stores))
+	for name := range stores {
+		names = append(names, name)
+	}
+	d.logger.Printf("Convoy: opened %d beads store(s): %v", len(stores), names)
+	return stores
 }
 
 // getKnownRigs returns list of registered rig names.
@@ -897,20 +1424,40 @@ func (d *Daemon) getKnownRigs() []string {
 	return rigs
 }
 
-// getPatrolRigs returns the list of rigs for a patrol.
+// getPatrolRigs returns the list of operational rigs for a patrol.
 // If the patrol config specifies a rigs filter, only those rigs are returned.
-// Otherwise, all known rigs are returned.
+// Otherwise, all known rigs are returned. In both cases, non-operational
+// rigs (parked/docked) are filtered out at list-building time. (Fixes upstream #2082)
 func (d *Daemon) getPatrolRigs(patrol string) []string {
 	configRigs := GetPatrolRigs(d.patrolConfig, patrol)
+	var candidates []string
 	if len(configRigs) > 0 {
-		return configRigs
+		candidates = configRigs
+	} else {
+		candidates = d.getKnownRigs()
 	}
-	return d.getKnownRigs()
+
+	// Filter out non-operational rigs early to avoid per-rig skip noise
+	var operational []string
+	for _, rigName := range candidates {
+		if ok, reason := d.isRigOperational(rigName); ok {
+			operational = append(operational, rigName)
+		} else {
+			d.logger.Printf("Excluding %s from %s patrol: %s", rigName, patrol, reason)
+		}
+	}
+	return operational
 }
 
 // isRigOperational checks if a rig is in an operational state.
 // Returns true if the rig can have agents auto-started.
 // Returns false (with reason) if the rig is parked, docked, or has auto_restart blocked/disabled.
+//
+// TODO(#2120): This duplicates parked/docked checking logic from
+// cmd.IsRigParkedOrDocked and cmd.hasRigBeadLabel. Consolidating into a
+// shared package (e.g. internal/rig) would eliminate the third implementation
+// and reduce drift risk. Not done here due to circular import constraints
+// (daemon cannot import cmd).
 func (d *Daemon) isRigOperational(rigName string) (bool, string) {
 	cfg := wisp.NewConfig(d.config.TownRoot, rigName)
 
@@ -931,20 +1478,35 @@ func (d *Daemon) isRigOperational(rigName string) (bool, string) {
 	// Check rig bead labels (global/synced docked status)
 	// This is the persistent docked state set by 'gt rig dock'
 	rigPath := filepath.Join(d.config.TownRoot, rigName)
+	
+	// Try to get prefix from rig config.json, fall back to rigs.json registry
+	var prefix string
 	if rigCfg, err := rig.LoadRigConfig(rigPath); err == nil && rigCfg.Beads != nil {
-		rigBeadID := fmt.Sprintf("%s-rig-%s", rigCfg.Beads.Prefix, rigName)
-		rigBeadsDir := beads.ResolveBeadsDir(rigPath)
-		bd := beads.NewWithBeadsDir(rigPath, rigBeadsDir)
-		if issue, err := bd.Show(rigBeadID); err == nil {
-			for _, label := range issue.Labels {
-				if label == "status:docked" {
-					return false, "rig is docked (global)"
-				}
-				if label == "status:parked" {
-					return false, "rig is parked (global)"
-				}
+		prefix = rigCfg.Beads.Prefix
+	} else {
+		// Fall back to registry (mayor/rigs.json) when config.json is missing
+		prefix = config.GetRigPrefix(d.config.TownRoot, rigName)
+	}
+	
+	rigBeadID := fmt.Sprintf("%s-rig-%s", prefix, rigName)
+	rigBeadsDir := beads.ResolveBeadsDir(rigPath)
+	bd := beads.NewWithBeadsDir(rigPath, rigBeadsDir)
+	if issue, err := bd.Show(rigBeadID); err == nil {
+		for _, label := range issue.Labels {
+			if label == "status:docked" {
+				return false, "rig is docked (global)"
+			}
+			if label == "status:parked" {
+				return false, "rig is parked (global)"
 			}
 		}
+	} else {
+		// Log when rig bead lookup fails - this helps debug transient Dolt issues
+		// FAIL-SAFE: When we can't verify docked status (Dolt down, network issue, etc.),
+		// assume the rig is NOT operational. This prevents wasting API credits starting
+		// witnesses that might be docked. Better to delay work than burn credits unnecessarily.
+		d.logger.Printf("Warning: failed to check rig bead %s for docked/parked status: %v (assuming not operational)", rigBeadID, err)
+		return false, "cannot verify rig status (Dolt unavailable)"
 	}
 
 	// Check auto_restart config
@@ -965,223 +1527,9 @@ func (d *Daemon) isRigOperational(rigName string) (bool, string) {
 	return true, ""
 }
 
-// triggerPendingSpawns polls pending polecat spawns and triggers those that are ready.
-// This is bootstrap mode - uses regex-based WaitForRuntimeReady which is acceptable
-// for daemon operations when no AI agent is guaranteed to be running.
-// The timeout is short (2s) to avoid blocking the heartbeat.
-func (d *Daemon) triggerPendingSpawns() {
-	const triggerTimeout = 2 * time.Second
-
-	// Check for pending spawns (from POLECAT_STARTED messages in Deacon inbox)
-	pending, err := polecat.CheckInboxForSpawns(d.config.TownRoot)
-	if err != nil {
-		d.logger.Printf("Error checking pending spawns: %v", err)
-		return
-	}
-
-	if len(pending) == 0 {
-		return
-	}
-
-	d.logger.Printf("Found %d pending spawn(s), attempting to trigger...", len(pending))
-
-	// Trigger pending spawns (uses WaitForRuntimeReady with short timeout)
-	results, err := polecat.TriggerPendingSpawns(d.config.TownRoot, triggerTimeout)
-	if err != nil {
-		d.logger.Printf("Error triggering spawns: %v", err)
-		return
-	}
-
-	// Log results
-	triggered := 0
-	for _, r := range results {
-		if r.Triggered {
-			triggered++
-			d.logger.Printf("Triggered polecat: %s/%s", r.Spawn.Rig, r.Spawn.Polecat)
-		} else if r.Error != nil {
-			d.logger.Printf("Error triggering %s: %v", r.Spawn.Session, r.Error)
-		}
-	}
-
-	if triggered > 0 {
-		d.logger.Printf("Triggered %d/%d pending spawn(s)", triggered, len(pending))
-	}
-
-	// Prune stale pending spawns (older than 5 minutes - likely dead sessions)
-	pruned, _ := polecat.PruneStalePending(d.config.TownRoot, 5*time.Minute)
-	if pruned > 0 {
-		d.logger.Printf("Pruned %d stale pending spawn(s)", pruned)
-	}
-}
-
 // processLifecycleRequests checks for and processes lifecycle requests.
 func (d *Daemon) processLifecycleRequests() {
 	d.ProcessLifecycleRequests()
-}
-
-// cleanupTownServiceBeads detects and cleans up errant .beads directories in town-level service directories.
-// Mayor and Deacon should use the town beads database (~/gt/.beads) via parent directory walk.
-// If they have local .beads directories with databases, bd commands use the wrong database.
-// This can happen if an agent runs "bd init" from the wrong directory.
-//
-// Process:
-// 1. Pipe issues from errant db to town db (bd export | bd import)
-// 2. Remove the errant .beads directory
-//
-// This uses bd export/import which are backend-agnostic.
-func (d *Daemon) cleanupTownServiceBeads() {
-	// Town-level service directories that should NOT have their own .beads
-	serviceDirs := []string{"mayor", "deacon"}
-	townBeadsDir := filepath.Join(d.config.TownRoot, ".beads")
-
-	for _, svc := range serviceDirs {
-		svcBeadsDir := filepath.Join(d.config.TownRoot, svc, ".beads")
-
-		// Check if .beads directory exists
-		info, err := os.Stat(svcBeadsDir)
-		if err != nil || !info.IsDir() {
-			continue // No .beads directory, nothing to clean
-		}
-
-		// Check if it has a redirect file (that's ok - it's pointing elsewhere)
-		redirectPath := filepath.Join(svcBeadsDir, "redirect")
-		if _, err := os.Stat(redirectPath); err == nil {
-			continue // Has redirect, working as expected
-		}
-
-		// Check if it has database files (the actual problem)
-		hasDB := false
-		dbPatterns := []string{"*.db", "dolt"}
-		for _, pattern := range dbPatterns {
-			matches, _ := filepath.Glob(filepath.Join(svcBeadsDir, pattern))
-			if len(matches) > 0 {
-				hasDB = true
-				break
-			}
-		}
-
-		if !hasDB {
-			continue // No database, probably just empty or has other files
-		}
-
-		d.logger.Printf("Found errant .beads in %s - migrating to town beads", svc)
-
-		// Migrate: pipe export from errant db directly to import in town db
-		// This avoids temporary files and is backend-agnostic
-		if err := d.migrateBeadsToTown(svcBeadsDir, townBeadsDir); err != nil {
-			d.logger.Printf("Warning: failed to migrate %s/.beads: %v", svc, err)
-			continue
-		}
-
-		// Remove the errant .beads directory
-		if err := os.RemoveAll(svcBeadsDir); err != nil {
-			d.logger.Printf("Warning: failed to remove %s/.beads: %v", svc, err)
-		} else {
-			d.logger.Printf("Migrated %s/.beads to town beads and cleaned up", svc)
-		}
-	}
-}
-
-// migrateBeadsToTown pipes issues from source beads dir to town beads dir.
-// Uses bd export | bd import which is backend-agnostic.
-func (d *Daemon) migrateBeadsToTown(srcBeadsDir, dstBeadsDir string) error {
-	// Kill any bd daemon for the source beads directory first.
-	// The daemon holds the database lock, preventing export from reading.
-	d.killBeadsDaemon(srcBeadsDir)
-
-	// Set up export command (reads from source)
-	exportCmd := exec.Command(d.bdPath, "export")
-	exportCmd.Env = append(os.Environ(), "BEADS_DIR="+srcBeadsDir)
-	exportCmd.Dir = filepath.Dir(srcBeadsDir)
-
-	// Set up import command (writes to destination)
-	importCmd := exec.Command(d.bdPath, "import")
-	importCmd.Env = append(os.Environ(), "BEADS_DIR="+dstBeadsDir)
-	importCmd.Dir = filepath.Dir(dstBeadsDir)
-
-	// Pipe export stdout to import stdin
-	pipe, err := exportCmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create pipe: %w", err)
-	}
-	importCmd.Stdin = pipe
-
-	// Capture stderr for error reporting
-	var exportStderr, importStderr strings.Builder
-	exportCmd.Stderr = &exportStderr
-	importCmd.Stderr = &importStderr
-
-	// Start both commands
-	if err := exportCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start export: %w", err)
-	}
-	if err := importCmd.Start(); err != nil {
-		_ = exportCmd.Process.Kill()
-		return fmt.Errorf("failed to start import: %w", err)
-	}
-
-	// Wait for both commands concurrently to avoid pipe deadlock.
-	// If we wait for export first, it may block on a full pipe buffer
-	// while import is also blocked, causing a deadlock.
-	// By waiting concurrently, we allow both processes to make progress.
-	var exportErr, importErr error
-	done := make(chan struct{})
-	go func() {
-		exportErr = exportCmd.Wait()
-		close(done)
-	}()
-	importErr = importCmd.Wait()
-	<-done // Wait for export goroutine to complete
-
-	if exportErr != nil {
-		return fmt.Errorf("export failed: %s", strings.TrimSpace(exportStderr.String()))
-	}
-	if importErr != nil {
-		return fmt.Errorf("import failed: %s", strings.TrimSpace(importStderr.String()))
-	}
-
-	return nil
-}
-
-// killBeadsDaemon kills any bd daemon running for the given beads directory.
-// This is needed before export because the daemon holds the database lock.
-func (d *Daemon) killBeadsDaemon(beadsDir string) {
-	pidFile := filepath.Join(beadsDir, "daemon.pid")
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		return // No daemon.pid file, nothing to kill
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return // Invalid PID
-	}
-
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return
-	}
-
-	// Check if process is alive
-	if err := process.Signal(syscall.Signal(0)); err != nil {
-		return // Process not running
-	}
-
-	// Kill the daemon
-	d.logger.Printf("Killing bd daemon (PID %d) for errant beads at %s", pid, beadsDir)
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		d.logger.Printf("Warning: failed to send SIGTERM to bd daemon: %v", err)
-		return
-	}
-
-	// Wait briefly for graceful shutdown
-	time.Sleep(100 * time.Millisecond)
-
-	// Force kill if still alive
-	if err := process.Signal(syscall.Signal(0)); err == nil {
-		_ = process.Signal(syscall.SIGKILL)
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 // shutdown performs graceful shutdown.
@@ -1194,11 +1542,12 @@ func (d *Daemon) shutdown(state *State) error { //nolint:unparam // error return
 		d.logger.Println("Feed curator stopped")
 	}
 
-	// Stop convoy watcher
-	if d.convoyWatcher != nil {
-		d.convoyWatcher.Stop()
-		d.logger.Println("Convoy watcher stopped")
+	// Stop convoy manager (also closes beads stores)
+	if d.convoyManager != nil {
+		d.convoyManager.Stop()
+		d.logger.Println("Convoy manager stopped")
 	}
+	d.beadsStores = nil
 
 	// Stop KRC pruner
 	if d.krcPruner != nil {
@@ -1206,12 +1555,24 @@ func (d *Daemon) shutdown(state *State) error { //nolint:unparam // error return
 		d.logger.Println("KRC pruner stopped")
 	}
 
+	// Push Dolt remotes before stopping the server (if patrol is enabled)
+	d.pushDoltRemotes()
+
 	// Stop Dolt server if we're managing it
 	if d.doltServer != nil && d.doltServer.IsEnabled() && !d.doltServer.IsExternal() {
 		if err := d.doltServer.Stop(); err != nil {
 			d.logger.Printf("Warning: failed to stop Dolt server: %v", err)
 		} else {
 			d.logger.Println("Dolt server stopped")
+		}
+	}
+
+	// Flush and stop OTel providers (5s deadline to avoid blocking shutdown).
+	if d.otelProvider != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.otelProvider.Shutdown(shutCtx); err != nil {
+			d.logger.Printf("Warning: telemetry shutdown: %v", err)
 		}
 	}
 
@@ -1290,70 +1651,69 @@ func IsShutdownInProgress(townRoot string) bool {
 }
 
 // IsRunning checks if a daemon is running for the given town.
-// It checks the PID file and verifies the process is alive.
-// Note: The file lock in Run() is the authoritative mechanism for preventing
-// duplicate daemons. This function is for status checks and cleanup.
+// Uses the daemon.lock flock as the authoritative signal — if the lock is held,
+// the daemon is running. Falls back to PID file for the process ID.
+// This avoids fragile ps string matching for process identity (ZFC fix: gt-utuk).
 func IsRunning(townRoot string) (bool, int, error) {
+	// Primary check: is the daemon lock held?
+	lockPath := filepath.Join(townRoot, "daemon", "daemon.lock")
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		return false, 0, nil
+	}
+
+	lock := flock.New(lockPath)
+	locked, err := lock.TryLock()
+	if err != nil {
+		// Can't check lock — fall back to PID file + signal check
+		return isRunningFromPID(townRoot)
+	}
+
+	if locked {
+		// We acquired the lock, so no daemon holds it
+		_ = lock.Unlock()
+		// Clean up stale PID file if present
+		pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
+		_ = os.Remove(pidFile)
+		return false, 0, nil
+	}
+
+	// Lock is held — daemon is running. Read PID from file.
+	// Use readPIDFile to handle the "PID\nNONCE" format introduced alongside
+	// nonce-based ownership verification. A plain Atoi on the raw file content
+	// fails when a nonce line is present, returning PID 0.
 	pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
-	data, err := os.ReadFile(pidFile)
+	pid, _, err := readPIDFile(pidFile)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, 0, nil
-		}
-		// Return error for other failures (permissions, I/O)
-		return false, 0, fmt.Errorf("reading PID file: %w", err)
-	}
-
-	pidStr := strings.TrimSpace(string(data))
-	pid, err := strconv.Atoi(pidStr)
-	if err != nil {
-		// Corrupted PID file - return error, not silent false
-		return false, 0, fmt.Errorf("invalid PID in file %q: %w", pidStr, err)
-	}
-
-	// Check if process is alive
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false, 0, nil
-	}
-
-	// On Unix, FindProcess always succeeds. Send signal 0 to check if alive.
-	if err := process.Signal(syscall.Signal(0)); err != nil {
-		// Process not running, clean up stale PID file
-		if err := os.Remove(pidFile); err == nil {
-			// Successfully cleaned up stale file
-			return false, 0, fmt.Errorf("removed stale PID file (process %d not found)", pid)
-		}
-		return false, 0, nil
-	}
-
-	// CRITICAL: Verify it's actually our daemon, not PID reuse
-	if !isGasTownDaemon(pid) {
-		// PID reused by different process
-		if err := os.Remove(pidFile); err == nil {
-			return false, 0, fmt.Errorf("removed stale PID file (PID %d is not gt daemon)", pid)
-		}
-		return false, 0, nil
+		// Lock held but no readable PID file — daemon running, PID unknown
+		return true, 0, nil
 	}
 
 	return true, pid, nil
 }
 
-// isGasTownDaemon checks if a PID is actually a gt daemon run process.
-// This prevents false positives from PID reuse.
-// Uses ps command for cross-platform compatibility (Linux, macOS).
-func isGasTownDaemon(pid int) bool {
-	// Use ps to get command for the PID (works on Linux and macOS)
-	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=")
-	output, err := cmd.Output()
+// isRunningFromPID is the fallback when flock check fails. Uses PID file + signal.
+func isRunningFromPID(townRoot string) (bool, int, error) {
+	pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
+
+	pid, alive, err := verifyPIDOwnership(pidFile)
 	if err != nil {
-		return false
+		return false, 0, fmt.Errorf("checking PID file: %w", err)
 	}
 
-	cmdline := strings.TrimSpace(string(output))
+	if pid == 0 {
+		// No PID file
+		return false, 0, nil
+	}
 
-	// Check if it's "gt daemon run" or "/path/to/gt daemon run"
-	return strings.Contains(cmdline, "gt") && strings.Contains(cmdline, "daemon") && strings.Contains(cmdline, "run")
+	if !alive {
+		// Process not running, clean up stale PID file.
+		// This is a successful recovery, not an error — the caller can
+		// proceed as if no daemon is running (fixes #2107).
+		os.Remove(pidFile) // best-effort cleanup
+		return false, 0, nil
+	}
+
+	return true, pid, nil
 }
 
 // StopDaemon stops the running daemon for the given town.
@@ -1366,6 +1726,16 @@ func StopDaemon(townRoot string) error {
 	}
 	if !running {
 		return fmt.Errorf("daemon is not running")
+	}
+
+	if pid <= 0 {
+		// Lock is held but PID is unknown (race: daemon starting, or stale lock).
+		// Clean up the lock file so the next gt up can start fresh.
+		lockPath := filepath.Join(townRoot, "daemon", "daemon.lock")
+		_ = os.Remove(lockPath)
+		pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
+		_ = os.Remove(pidFile)
+		return nil
 	}
 
 	process, err := os.FindProcess(pid)
@@ -1394,43 +1764,61 @@ func StopDaemon(townRoot string) error {
 	return nil
 }
 
-// FindOrphanedDaemons finds all gt daemon run processes that aren't tracked by PID file.
-// Returns list of orphaned PIDs.
-func FindOrphanedDaemons() ([]int, error) {
-	// Use pgrep to find all "daemon run" processes (broad search, then verify with isGasTownDaemon)
-	cmd := exec.Command("pgrep", "-f", "daemon run")
-	output, err := cmd.Output()
+// FindOrphanedDaemons detects daemon processes not tracked by the PID file.
+// Uses flock on daemon.lock to detect running daemons without relying on
+// pgrep or ps string matching (ZFC fix: gt-utuk).
+//
+// With flock-based daemon management, only one daemon can hold the lock.
+// An "orphan" is detected when the lock is held but the PID file is stale
+// (process dead) or missing. Returns the stale PID if available.
+func FindOrphanedDaemons(townRoot string) ([]int, error) {
+	lockPath := filepath.Join(townRoot, "daemon", "daemon.lock")
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		return nil, nil // No lock file — no daemon has ever run
+	}
+
+	lock := flock.New(lockPath)
+	locked, err := lock.TryLock()
 	if err != nil {
-		// Exit code 1 means no processes found - that's OK
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("pgrep failed: %w", err)
+		return nil, nil // Can't check lock — assume no orphans
 	}
 
-	// Parse PIDs
-	var pids []int
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if line == "" {
-			continue
-		}
-		pid, err := strconv.Atoi(line)
-		if err != nil {
-			continue
-		}
-		// Verify it's actually gt daemon (filters out unrelated processes)
-		if isGasTownDaemon(pid) {
-			pids = append(pids, pid)
-		}
+	if locked {
+		// We acquired the lock — no daemon holds it, no orphans possible
+		_ = lock.Unlock()
+		return nil, nil
 	}
 
-	return pids, nil
+	// Lock is held — a daemon is running. Check if it's tracked.
+	pidFile := filepath.Join(townRoot, "daemon", "daemon.pid")
+	trackedPID, _, err := readPIDFile(pidFile)
+	if err != nil {
+		// Lock held but no/invalid PID file — daemon is running but untracked.
+		// We can't determine its PID without ps/pgrep, so return empty.
+		// The caller (start.go) should use IsRunning() which handles this case.
+		return nil, nil
+	}
+
+	// Check if the tracked PID is actually alive
+	process, findErr := os.FindProcess(trackedPID)
+	if findErr != nil {
+		return nil, nil
+	}
+	if process.Signal(syscall.Signal(0)) != nil {
+		// PID file exists but process is dead — stale PID file with held lock.
+		// This shouldn't happen (lock should release on process death), but
+		// report the stale PID for cleanup.
+		return []int{trackedPID}, nil
+	}
+
+	// Lock held, PID alive, PID tracked — daemon is properly running, not orphaned.
+	return nil, nil
 }
 
 // KillOrphanedDaemons finds and kills any orphaned gt daemon processes.
 // Returns number of processes killed.
-func KillOrphanedDaemons() (int, error) {
-	pids, err := FindOrphanedDaemons()
+func KillOrphanedDaemons(townRoot string) (int, error) {
+	pids, err := FindOrphanedDaemons(townRoot)
 	if err != nil {
 		return 0, err
 	}
@@ -1516,7 +1904,7 @@ func listPolecatWorktrees(polecatsDir string) ([]string, error) {
 // If the polecat has work-on-hook but the tmux session is dead, it's restarted.
 func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 	// Build the expected tmux session name
-	sessionName := fmt.Sprintf("gt-%s-%s", rigName, polecatName)
+	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
 
 	// Check if tmux session exists
 	sessionAlive, err := d.tmux.HasSession(sessionName)
@@ -1548,6 +1936,33 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 		return
 	}
 
+	// Spawning guard: skip polecats being actively started by gt sling.
+	// agent_state='spawning' means the polecat bead was created (with hook_bead
+	// set atomically) but the tmux session hasn't been launched yet. Restarting
+	// here would create a second Claude process alongside the one gt sling is
+	// about to start, causing the double-spawn bug (issue #1752).
+	//
+	// Time-bound: only skip if the bead was updated recently (within 5 minutes).
+	// If gt sling crashed during spawn, the polecat would be stuck in 'spawning'
+	// indefinitely. The Witness patrol also catches spawning-as-zombie, but a
+	// time-bound here makes the daemon self-sufficient for this edge case.
+	if beads.AgentState(info.State) == beads.AgentStateSpawning {
+		if updatedAt, err := time.Parse(time.RFC3339, info.LastUpdate); err == nil {
+			if time.Since(updatedAt) < 5*time.Minute {
+				d.logger.Printf("Skipping restart for %s/%s: agent_state=spawning (gt sling in progress, updated %s ago)",
+					rigName, polecatName, time.Since(updatedAt).Round(time.Second))
+				return
+			}
+			d.logger.Printf("Spawning guard expired for %s/%s: agent_state=spawning but last updated %s ago (>5m), proceeding with crash detection",
+				rigName, polecatName, time.Since(updatedAt).Round(time.Second))
+		} else {
+			// Can't parse timestamp — be safe, skip restart during spawning
+			d.logger.Printf("Skipping restart for %s/%s: agent_state=spawning (gt sling in progress, unparseable updated_at)",
+				rigName, polecatName)
+			return
+		}
+	}
+
 	// TOCTOU guard: re-verify session is still dead before restarting.
 	// Between the initial check and now, the session may have been restarted
 	// by another heartbeat cycle, witness, or the polecat itself.
@@ -1563,14 +1978,12 @@ func (d *Daemon) checkPolecatHealth(rigName, polecatName string) {
 	// Track this death for mass death detection
 	d.recordSessionDeath(sessionName)
 
-	// Auto-restart the polecat
-	if err := d.restartPolecatSession(rigName, polecatName, sessionName); err != nil {
-		d.logger.Printf("Error restarting polecat %s/%s: %v", rigName, polecatName, err)
-		// Notify witness as fallback
-		d.notifyWitnessOfCrashedPolecat(rigName, polecatName, info.HookBead, err)
-	} else {
-		d.logger.Printf("Successfully restarted crashed polecat %s/%s", rigName, polecatName)
-	}
+	// Emit session_death event for audit trail / feed visibility
+	_ = events.LogFeed(events.TypeSessionDeath, sessionName,
+		events.SessionDeathPayload(sessionName, rigName+"/polecats/"+polecatName, "crash detected by daemon health check", "daemon"))
+
+	// Notify witness — stuck-agent-dog plugin handles context-aware restart
+	d.notifyWitnessOfCrashedPolecat(rigName, polecatName, info.HookBead)
 }
 
 // recordSessionDeath records a session death and checks for mass death pattern.
@@ -1623,95 +2036,138 @@ func (d *Daemon) emitMassDeathEvent() {
 	d.recentDeaths = nil
 }
 
-// restartPolecatSession restarts a crashed polecat session.
-func (d *Daemon) restartPolecatSession(rigName, polecatName, sessionName string) error {
-	// Check rig operational state before auto-restarting
-	if operational, reason := d.isRigOperational(rigName); !operational {
-		return fmt.Errorf("cannot restart polecat: %s", reason)
-	}
-
-	// Calculate rig path for agent config resolution
-	rigPath := filepath.Join(d.config.TownRoot, rigName)
-
-	// Determine working directory (handle both new and old structures)
-	// New structure: polecats/<name>/<rigname>/
-	// Old structure: polecats/<name>/
-	workDir := filepath.Join(rigPath, "polecats", polecatName, rigName)
-	if _, err := os.Stat(workDir); os.IsNotExist(err) {
-		// Fall back to old structure
-		workDir = filepath.Join(rigPath, "polecats", polecatName)
-	}
-
-	// Verify the worktree exists
-	if _, err := os.Stat(workDir); os.IsNotExist(err) {
-		return fmt.Errorf("polecat worktree does not exist: %s", workDir)
-	}
-
-	// Pre-sync workspace (ensure beads are current)
-	d.syncWorkspace(workDir)
-
-	// Create new tmux session
-	// Use EnsureSessionFresh to handle zombie sessions that exist but have dead Claude
-	if err := d.tmux.EnsureSessionFresh(sessionName, workDir); err != nil {
-		return fmt.Errorf("creating session: %w", err)
-	}
-
-	// Set environment variables using centralized AgentEnv
-	envVars := config.AgentEnv(config.AgentEnvConfig{
-		Role:      "polecat",
-		Rig:       rigName,
-		AgentName: polecatName,
-		TownRoot:  d.config.TownRoot,
-	})
-
-	// Set all env vars in tmux session (for debugging) and they'll also be exported to Claude
-	for k, v := range envVars {
-		_ = d.tmux.SetEnvironment(sessionName, k, v)
-	}
-
-	// Apply theme
-	theme := tmux.AssignTheme(rigName)
-	_ = d.tmux.ConfigureGasTownSession(sessionName, theme, rigName, polecatName, "polecat")
-
-	// Set pane-died hook for future crash detection
-	agentID := fmt.Sprintf("%s/%s", rigName, polecatName)
-	_ = d.tmux.SetPaneDiedHook(sessionName, agentID)
-
-	// Launch Claude with environment exported inline
-	// Pass rigPath so rig agent settings are honored (not town-level defaults)
-	startCmd := config.BuildStartupCommand(envVars, rigPath, "")
-	if err := d.tmux.SendKeys(sessionName, startCmd); err != nil {
-		return fmt.Errorf("sending startup command: %w", err)
-	}
-
-	// Wait for Claude to start, then accept bypass permissions warning if it appears.
-	// This ensures automated restarts aren't blocked by the warning dialog.
-	if err := d.tmux.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-		// Non-fatal - Claude might still start
-	}
-	_ = d.tmux.AcceptBypassPermissionsWarning(sessionName)
-
-	return nil
-}
-
-// notifyWitnessOfCrashedPolecat notifies the witness when a polecat restart fails.
-func (d *Daemon) notifyWitnessOfCrashedPolecat(rigName, polecatName, hookBead string, restartErr error) {
+// notifyWitnessOfCrashedPolecat notifies the witness when a polecat crash is detected.
+// The stuck-agent-dog plugin handles context-aware restart decisions.
+func (d *Daemon) notifyWitnessOfCrashedPolecat(rigName, polecatName, hookBead string) {
 	witnessAddr := rigName + "/witness"
-	subject := fmt.Sprintf("CRASHED_POLECAT: %s/%s restart failed", rigName, polecatName)
-	body := fmt.Sprintf(`Polecat %s crashed and automatic restart failed.
+	subject := fmt.Sprintf("CRASHED_POLECAT: %s/%s detected", rigName, polecatName)
+	body := fmt.Sprintf(`Polecat %s crash detected (session dead, work on hook).
 
 hook_bead: %s
-restart_error: %v
 
-Manual intervention may be required.`,
-		polecatName, hookBead, restartErr)
+Restart deferred to stuck-agent-dog plugin for context-aware recovery.`,
+		polecatName, hookBead)
 
 	cmd := exec.Command(d.gtPath, "mail", "send", witnessAddr, "-s", subject, "-m", body) //nolint:gosec // G204: args are constructed internally
 	cmd.Dir = d.config.TownRoot
-	cmd.Env = os.Environ() // Inherit PATH to find gt executable
+	cmd.Env = append(os.Environ(), "BD_ACTOR=daemon") // Identify as daemon, not overseer
 	if err := cmd.Run(); err != nil {
 		d.logger.Printf("Warning: failed to notify witness of crashed polecat: %v", err)
 	}
+}
+
+// reapIdlePolecats kills polecat tmux sessions that have been idle too long.
+// The persistent polecat model (gt-4ac) keeps sessions alive after gt done for reuse,
+// but idle sessions consume API slots (Claude Code process stays alive at 0% CPU).
+// This reaper checks heartbeat state and kills sessions idle longer than the threshold.
+func (d *Daemon) reapIdlePolecats() {
+	opCfg := d.loadOperationalConfig().GetDaemonConfig()
+	timeout := opCfg.PolecatIdleSessionTimeoutD()
+
+	rigs := d.getKnownRigs()
+	for _, rigName := range rigs {
+		d.reapRigIdlePolecats(rigName, timeout)
+	}
+}
+
+// reapRigIdlePolecats checks all polecats in a rig and kills idle sessions.
+func (d *Daemon) reapRigIdlePolecats(rigName string, timeout time.Duration) {
+	polecatsDir := filepath.Join(d.config.TownRoot, rigName, "polecats")
+	polecats, err := listPolecatWorktrees(polecatsDir)
+	if err != nil {
+		return // No polecats directory
+	}
+
+	for _, polecatName := range polecats {
+		d.reapIdlePolecat(rigName, polecatName, timeout)
+	}
+}
+
+// reapIdlePolecat checks a single polecat and kills it if idle too long.
+// A polecat is considered idle if:
+//   - Heartbeat state is "exiting" or "idle" and timestamp exceeds threshold, OR
+//   - Heartbeat state is "working" but timestamp is stale AND the polecat has no
+//     hooked work (agent_state=idle in beads). This catches polecats that completed
+//     gt done — persistentPreRun resets heartbeat to "working" on every gt sub-command,
+//     so after gt done finishes the heartbeat shows "working" with a stale timestamp.
+func (d *Daemon) reapIdlePolecat(rigName, polecatName string, timeout time.Duration) {
+	sessionName := session.PolecatSessionName(session.PrefixFor(rigName), polecatName)
+
+	// Only check sessions that are actually alive
+	alive, err := d.tmux.HasSession(sessionName)
+	if err != nil || !alive {
+		return
+	}
+
+	// Read heartbeat to check state and idle duration
+	hb := polecat.ReadSessionHeartbeat(d.config.TownRoot, sessionName)
+	if hb == nil {
+		return // No heartbeat file — can't determine state
+	}
+
+	staleDuration := time.Since(hb.Timestamp)
+	if staleDuration < timeout {
+		return // Heartbeat is fresh — polecat is active
+	}
+
+	state := hb.EffectiveState()
+
+	// Explicitly idle or exiting — safe to reap
+	if state == polecat.HeartbeatIdle || state == polecat.HeartbeatExiting {
+		d.killIdlePolecat(rigName, polecatName, sessionName, staleDuration, timeout, string(state))
+		return
+	}
+
+	// Heartbeat says "working" but is stale — check if polecat actually has hooked work.
+	// If agent_state=idle in beads and no hook_bead, the polecat finished gt done
+	// and is sitting idle (heartbeat wasn't updated to "idle" because persistentPreRun
+	// resets to "working" on every gt sub-command during gt done).
+	if state == polecat.HeartbeatWorking {
+		prefix := beads.GetPrefixForRig(d.config.TownRoot, rigName)
+		agentBeadID := beads.PolecatBeadIDWithPrefix(prefix, rigName, polecatName)
+		info, err := d.getAgentBeadInfo(agentBeadID)
+		if err != nil {
+			// Agent bead lookup failed — polecat has no provable work.
+			// If heartbeat is stale enough (2x timeout), reap anyway to prevent
+			// indefinite API burn when bead infrastructure is degraded.
+			if staleDuration >= timeout*2 {
+				d.killIdlePolecat(rigName, polecatName, sessionName, staleDuration, timeout, "working-bead-lookup-failed")
+			}
+			return
+		}
+
+		// If polecat has hooked work, it might just be stuck (not idle).
+		// Don't reap — let checkPolecatSessionHealth handle stuck polecats.
+		if info.HookBead != "" {
+			return
+		}
+
+		// No hooked work + stale heartbeat = idle polecat
+		d.killIdlePolecat(rigName, polecatName, sessionName, staleDuration, timeout, "working-no-hook")
+	}
+}
+
+// killIdlePolecat terminates an idle polecat session and cleans up.
+func (d *Daemon) killIdlePolecat(rigName, polecatName, sessionName string, idleDuration, timeout time.Duration, reason string) {
+	d.logger.Printf("Reaping idle polecat %s/%s (state=%s, idle %v, threshold %v)",
+		rigName, polecatName, reason, idleDuration.Truncate(time.Second), timeout)
+
+	// Kill the tmux session (and all descendant processes)
+	if err := d.tmux.KillSessionWithProcesses(sessionName); err != nil {
+		d.logger.Printf("Warning: failed to kill idle polecat session %s: %v", sessionName, err)
+		return
+	}
+
+	// Clean up heartbeat file
+	polecat.RemoveSessionHeartbeat(d.config.TownRoot, sessionName)
+
+	d.logger.Printf("Reaped idle polecat %s/%s — session killed, API slot freed", rigName, polecatName)
+
+	// Emit feed event so the activity feed shows the reap
+	_ = events.LogFeed(events.TypeSessionDeath, fmt.Sprintf("%s/%s", rigName, polecatName),
+		events.SessionDeathPayload(sessionName, fmt.Sprintf("%s/polecats/%s", rigName, polecatName),
+			fmt.Sprintf("idle-reap: %s, idle %v (threshold %v)", reason, idleDuration.Truncate(time.Second), timeout),
+			"daemon"))
 }
 
 // cleanupOrphanedProcesses kills orphaned claude subagent processes.
@@ -1772,4 +2228,29 @@ func (d *Daemon) pruneStaleBranches() {
 
 	// Also prune in the town root itself (mayor clone)
 	pruneInDir(d.config.TownRoot, "town-root")
+}
+
+// dispatchQueuedWork shells out to `gt scheduler run` to dispatch scheduled beads.
+// This avoids circular import between the daemon and cmd packages.
+// Uses a 5m timeout to allow multi-bead dispatch with formula cooking and hook retries.
+//
+// Timeout safety: if the timeout fires mid-dispatch, a bead may be left with
+// metadata written but label not yet swapped (or vice versa). The dispatch flock
+// is released on process death, and dispatchSingleBead's label swap retry logic
+// prevents double-dispatch on the next cycle. The batch_size config (default: 1)
+// limits how many beads are in-flight per heartbeat, reducing the timeout window.
+func (d *Daemon) dispatchQueuedWork() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gt", "scheduler", "run")
+	cmd.Dir = d.config.TownRoot
+	cmd.Env = append(os.Environ(), "GT_DAEMON=1", "BD_DOLT_AUTO_COMMIT=off")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		d.logger.Printf("Scheduler dispatch timed out after 5m")
+	} else if err != nil {
+		d.logger.Printf("Scheduler dispatch failed: %v (output: %s)", err, string(out))
+	} else if len(out) > 0 {
+		d.logger.Printf("Scheduler dispatch: %s", string(out))
+	}
 }

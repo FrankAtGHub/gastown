@@ -2,6 +2,7 @@
 package beads
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,20 +10,21 @@ import (
 
 // Note: AgentFields, ParseAgentFields, FormatAgentDescription, and CreateAgentBead are in beads.go
 
-// ParseAgentFieldsFromDescription is an alias for ParseAgentFields.
-// Used by daemon for compatibility.
-func ParseAgentFieldsFromDescription(description string) *AgentFields {
-	return ParseAgentFields(description)
-}
-
 // AttachmentFields holds the attachment info for pinned beads.
 // These fields track which molecule is attached to a handoff/pinned bead.
 type AttachmentFields struct {
 	AttachedMolecule string // Root issue ID of the attached molecule
+	AttachedFormula  string // Formula name (e.g., "mol-polecat-work") for inline step display
 	AttachedAt       string // ISO 8601 timestamp when attached
 	AttachedArgs     string // Natural language args passed via gt sling --args (no-tmux mode)
+	AttachedVars     []string // Formula variables passed via gt sling --var
 	DispatchedBy     string // Agent ID that dispatched this work (for completion notification)
 	NoMerge          bool   // If true, gt done skips merge queue (for upstream PRs/human review)
+	Mode             string // Execution mode: "" (normal) or "ralph" (Ralph Wiggum loop)
+	ConvoyID         string // Convoy bead ID tracking this issue (e.g., "hq-cv-abc")
+	MergeStrategy    string // Convoy merge strategy: "direct", "mr", "local", or "" (default = mr)
+	ConvoyOwned      bool   // If true, convoy has gt:owned label (caller-managed lifecycle)
+	FormulaVars      string // Newline-separated key=value pairs for formula template substitution
 }
 
 // ParseAttachmentFields extracts attachment fields from an issue's description.
@@ -58,17 +60,38 @@ func ParseAttachmentFields(issue *Issue) *AttachmentFields {
 		case "attached_molecule", "attached-molecule", "attachedmolecule":
 			fields.AttachedMolecule = value
 			hasFields = true
+		case "attached_formula", "attached-formula", "attachedformula":
+			fields.AttachedFormula = value
+			hasFields = true
 		case "attached_at", "attached-at", "attachedat":
 			fields.AttachedAt = value
 			hasFields = true
 		case "attached_args", "attached-args", "attachedargs":
 			fields.AttachedArgs = value
 			hasFields = true
+		case "attached_vars", "attached-vars", "attachedvars":
+			fields.AttachedVars = parseAttachedVars(value)
+			hasFields = true
 		case "dispatched_by", "dispatched-by", "dispatchedby":
 			fields.DispatchedBy = value
 			hasFields = true
 		case "no_merge", "no-merge", "nomerge":
 			fields.NoMerge = strings.ToLower(value) == "true"
+			hasFields = true
+		case "mode":
+			fields.Mode = value
+			hasFields = true
+		case "convoy_id", "convoy-id", "convoyid", "convoy":
+			fields.ConvoyID = value
+			hasFields = true
+		case "merge_strategy", "merge-strategy", "mergestrategy":
+			fields.MergeStrategy = value
+			hasFields = true
+		case "convoy_owned", "convoy-owned", "convoyowned":
+			fields.ConvoyOwned = strings.ToLower(value) == "true"
+			hasFields = true
+		case "formula_vars", "formula-vars", "formulavars":
+			fields.FormulaVars = value
 			hasFields = true
 		}
 	}
@@ -91,17 +114,38 @@ func FormatAttachmentFields(fields *AttachmentFields) string {
 	if fields.AttachedMolecule != "" {
 		lines = append(lines, "attached_molecule: "+fields.AttachedMolecule)
 	}
+	if fields.AttachedFormula != "" {
+		lines = append(lines, "attached_formula: "+fields.AttachedFormula)
+	}
 	if fields.AttachedAt != "" {
 		lines = append(lines, "attached_at: "+fields.AttachedAt)
 	}
 	if fields.AttachedArgs != "" {
 		lines = append(lines, "attached_args: "+fields.AttachedArgs)
 	}
+	if len(fields.AttachedVars) > 0 {
+		lines = append(lines, "attached_vars: "+formatAttachedVars(fields.AttachedVars))
+	}
 	if fields.DispatchedBy != "" {
 		lines = append(lines, "dispatched_by: "+fields.DispatchedBy)
 	}
 	if fields.NoMerge {
 		lines = append(lines, "no_merge: true")
+	}
+	if fields.Mode != "" {
+		lines = append(lines, "mode: "+fields.Mode)
+	}
+	if fields.ConvoyID != "" {
+		lines = append(lines, "convoy_id: "+fields.ConvoyID)
+	}
+	if fields.MergeStrategy != "" {
+		lines = append(lines, "merge_strategy: "+fields.MergeStrategy)
+	}
+	if fields.ConvoyOwned {
+		lines = append(lines, "convoy_owned: true")
+	}
+	if fields.FormulaVars != "" {
+		lines = append(lines, "formula_vars: "+fields.FormulaVars)
 	}
 
 	return strings.Join(lines, "\n")
@@ -116,18 +160,38 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 		"attached_molecule": true,
 		"attached-molecule": true,
 		"attachedmolecule":  true,
+		"attached_formula":  true,
+		"attached-formula":  true,
+		"attachedformula":   true,
 		"attached_at":       true,
 		"attached-at":       true,
 		"attachedat":        true,
 		"attached_args":     true,
 		"attached-args":     true,
 		"attachedargs":      true,
+		"attached_vars":     true,
+		"attached-vars":     true,
+		"attachedvars":      true,
 		"dispatched_by":     true,
 		"dispatched-by":     true,
 		"dispatchedby":      true,
 		"no_merge":          true,
 		"no-merge":          true,
 		"nomerge":           true,
+		"mode":              true,
+		"convoy_id":         true,
+		"convoy-id":         true,
+		"convoyid":          true,
+		"convoy":            true,
+		"merge_strategy":    true,
+		"merge-strategy":    true,
+		"mergestrategy":     true,
+		"convoy_owned":      true,
+		"convoy-owned":      true,
+		"convoyowned":       true,
+		"formula_vars":      true,
+		"formula-vars":      true,
+		"formulavars":       true,
 	}
 
 	// Collect non-attachment lines from existing description
@@ -178,6 +242,199 @@ func SetAttachmentFields(issue *Issue, fields *AttachmentFields) string {
 	return formatted + "\n\n" + strings.Join(otherLines, "\n")
 }
 
+// ConvoyFields holds the structured fields for a convoy bead.
+// These fields are stored as key: value lines in the issue description.
+type ConvoyFields struct {
+	Owner      string // Convoy owner address (e.g., "mayor/")
+	Notify     string // Additional notification address
+	Molecule   string // Associated molecule/swarm ID
+	Merge      string // Merge strategy
+	BaseBranch string // Target branch for polecats (e.g., "feat/extraction-review")
+}
+
+// ParseConvoyFields extracts convoy fields from an issue's description.
+// Returns nil if no convoy fields found.
+func ParseConvoyFields(issue *Issue) *ConvoyFields {
+	if issue == nil || issue.Description == "" {
+		return nil
+	}
+
+	fields := &ConvoyFields{}
+	hasFields := false
+
+	for _, line := range strings.Split(issue.Description, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		colonIdx := strings.Index(line, ":")
+		if colonIdx == -1 {
+			continue
+		}
+
+		key := strings.TrimSpace(line[:colonIdx])
+		value := strings.TrimSpace(line[colonIdx+1:])
+		if value == "" {
+			continue
+		}
+
+		switch strings.ToLower(key) {
+		case "owner":
+			fields.Owner = value
+			hasFields = true
+		case "notify":
+			fields.Notify = value
+			hasFields = true
+		case "molecule":
+			fields.Molecule = value
+			hasFields = true
+		case "merge":
+			fields.Merge = value
+			hasFields = true
+		case "base_branch", "base-branch", "basebranch":
+			fields.BaseBranch = value
+			hasFields = true
+		}
+	}
+
+	if !hasFields {
+		return nil
+	}
+	return fields
+}
+
+// NotificationAddresses returns deduplicated notification addresses from convoy fields.
+func (f *ConvoyFields) NotificationAddresses() []string {
+	if f == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var addrs []string
+	for _, addr := range []string{f.Owner, f.Notify} {
+		if addr != "" && !seen[addr] {
+			addrs = append(addrs, addr)
+			seen[addr] = true
+		}
+	}
+	return addrs
+}
+
+// FormatConvoyFields formats ConvoyFields as a string suitable for an issue description.
+// Only non-empty fields are included.
+func FormatConvoyFields(fields *ConvoyFields) string {
+	if fields == nil {
+		return ""
+	}
+
+	var lines []string
+	if fields.Owner != "" {
+		lines = append(lines, "Owner: "+fields.Owner)
+	}
+	if fields.Notify != "" {
+		lines = append(lines, "Notify: "+fields.Notify)
+	}
+	if fields.Merge != "" {
+		lines = append(lines, "Merge: "+fields.Merge)
+	}
+	if fields.Molecule != "" {
+		lines = append(lines, "Molecule: "+fields.Molecule)
+	}
+	if fields.BaseBranch != "" {
+		lines = append(lines, "base_branch: "+fields.BaseBranch)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatAttachedVars(vars []string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(vars)
+	if err != nil {
+		return strings.Join(vars, ", ")
+	}
+	return string(encoded)
+}
+
+func parseAttachedVars(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var vars []string
+	if strings.HasPrefix(raw, "[") {
+		if err := json.Unmarshal([]byte(raw), &vars); err == nil {
+			return vars
+		}
+	}
+	return []string{raw}
+}
+
+// SetConvoyFields updates an issue's description with the given convoy fields.
+// Existing convoy field lines are replaced; other content is preserved.
+// Returns the new description string.
+func SetConvoyFields(issue *Issue, fields *ConvoyFields) string {
+	if issue == nil {
+		return FormatConvoyFields(fields)
+	}
+
+	// Known convoy field keys (lowercase)
+	convoyKeys := map[string]bool{
+		"owner":       true,
+		"notify":      true,
+		"merge":       true,
+		"molecule":    true,
+		"base_branch": true,
+		"base-branch": true,
+		"basebranch":  true,
+	}
+
+	// Collect non-convoy lines from existing description
+	var otherLines []string
+	if issue.Description != "" {
+		for _, line := range strings.Split(issue.Description, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				otherLines = append(otherLines, line)
+				continue
+			}
+
+			colonIdx := strings.Index(trimmed, ":")
+			if colonIdx == -1 {
+				otherLines = append(otherLines, line)
+				continue
+			}
+
+			key := strings.ToLower(strings.TrimSpace(trimmed[:colonIdx]))
+			if !convoyKeys[key] {
+				otherLines = append(otherLines, line)
+			}
+		}
+	}
+
+	// Build new description: other content first, then convoy fields
+	formatted := FormatConvoyFields(fields)
+
+	// Trim trailing blank lines from other content
+	for len(otherLines) > 0 && strings.TrimSpace(otherLines[len(otherLines)-1]) == "" {
+		otherLines = otherLines[:len(otherLines)-1]
+	}
+	// Trim leading blank lines from other content
+	for len(otherLines) > 0 && strings.TrimSpace(otherLines[0]) == "" {
+		otherLines = otherLines[1:]
+	}
+
+	if len(otherLines) == 0 {
+		return formatted
+	}
+	if formatted == "" {
+		return strings.Join(otherLines, "\n")
+	}
+
+	return strings.Join(otherLines, "\n") + "\n" + formatted
+}
+
 // MRFields holds the structured fields for a merge-request issue.
 // These fields are stored as key: value lines in the issue description.
 type MRFields struct {
@@ -198,6 +455,13 @@ type MRFields struct {
 	// Convoy tracking (for priority scoring - convoy starvation prevention)
 	ConvoyID        string // Parent convoy ID if part of a convoy
 	ConvoyCreatedAt string // Convoy creation time (ISO 8601) for starvation prevention
+
+	// Pre-verification fields (Phase 3: polecat-owned rebasing)
+	// When a polecat rebases onto the target and runs gates before submission,
+	// these fields allow the refinery to fast-path merge without re-running gates.
+	PreVerified     bool   // Polecat ran full gates after rebasing onto target
+	PreVerifiedAt   string // ISO 8601 timestamp when verification completed
+	PreVerifiedBase string // Target branch SHA at verification time
 }
 
 // ParseMRFields extracts structured merge-request fields from an issue's description.
@@ -272,6 +536,15 @@ func ParseMRFields(issue *Issue) *MRFields {
 		case "convoy_created_at", "convoy-created-at", "convoycreatedat":
 			fields.ConvoyCreatedAt = value
 			hasFields = true
+		case "pre_verified", "pre-verified", "preverified":
+			fields.PreVerified = strings.ToLower(value) == "true"
+			hasFields = true
+		case "pre_verified_at", "pre-verified-at", "preverifiedat":
+			fields.PreVerifiedAt = value
+			hasFields = true
+		case "pre_verified_base", "pre-verified-base", "preverifiedbase":
+			fields.PreVerifiedBase = value
+			hasFields = true
 		}
 	}
 
@@ -336,6 +609,15 @@ func FormatMRFields(fields *MRFields) string {
 	if fields.ConvoyCreatedAt != "" {
 		lines = append(lines, "convoy_created_at: "+fields.ConvoyCreatedAt)
 	}
+	if fields.PreVerified {
+		lines = append(lines, "pre_verified: true")
+	}
+	if fields.PreVerifiedAt != "" {
+		lines = append(lines, "pre_verified_at: "+fields.PreVerifiedAt)
+	}
+	if fields.PreVerifiedBase != "" {
+		lines = append(lines, "pre_verified_base: "+fields.PreVerifiedBase)
+	}
 
 	return strings.Join(lines, "\n")
 }
@@ -382,6 +664,15 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 		"convoy_created_at":  true,
 		"convoy-created-at":  true,
 		"convoycreatedat":    true,
+		"pre_verified":       true,
+		"pre-verified":       true,
+		"preverified":        true,
+		"pre_verified_at":    true,
+		"pre-verified-at":    true,
+		"preverifiedat":      true,
+		"pre_verified_base":  true,
+		"pre-verified-base":  true,
+		"preverifiedbase":    true,
 	}
 
 	// Collect non-MR lines from existing description
@@ -430,87 +721,6 @@ func SetMRFields(issue *Issue, fields *MRFields) string {
 	}
 
 	return formatted + "\n\n" + strings.Join(otherLines, "\n")
-}
-
-// SynthesisFields holds structured fields for synthesis beads.
-// These fields track the synthesis step in a convoy workflow.
-type SynthesisFields struct {
-	ConvoyID   string `json:"convoy_id"`   // Parent convoy ID
-	ReviewID   string `json:"review_id"`   // Review ID for output paths
-	OutputPath string `json:"output_path"` // Path to synthesis output file
-	Formula    string `json:"formula"`     // Formula name (if from formula)
-}
-
-// ParseSynthesisFields extracts synthesis fields from an issue's description.
-// Fields are expected as "key: value" lines. Returns nil if no fields found.
-func ParseSynthesisFields(issue *Issue) *SynthesisFields {
-	if issue == nil || issue.Description == "" {
-		return nil
-	}
-
-	fields := &SynthesisFields{}
-	hasFields := false
-
-	for _, line := range strings.Split(issue.Description, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			continue
-		}
-
-		key := strings.TrimSpace(line[:colonIdx])
-		value := strings.TrimSpace(line[colonIdx+1:])
-		if value == "" {
-			continue
-		}
-
-		switch strings.ToLower(key) {
-		case "convoy", "convoy_id", "convoy-id":
-			fields.ConvoyID = value
-			hasFields = true
-		case "review_id", "review-id", "reviewid":
-			fields.ReviewID = value
-			hasFields = true
-		case "output_path", "output-path", "outputpath":
-			fields.OutputPath = value
-			hasFields = true
-		case "formula":
-			fields.Formula = value
-			hasFields = true
-		}
-	}
-
-	if !hasFields {
-		return nil
-	}
-	return fields
-}
-
-// FormatSynthesisFields formats SynthesisFields as a string for issue description.
-func FormatSynthesisFields(fields *SynthesisFields) string {
-	if fields == nil {
-		return ""
-	}
-
-	var lines []string
-	if fields.ConvoyID != "" {
-		lines = append(lines, "convoy: "+fields.ConvoyID)
-	}
-	if fields.ReviewID != "" {
-		lines = append(lines, "review_id: "+fields.ReviewID)
-	}
-	if fields.OutputPath != "" {
-		lines = append(lines, "output_path: "+fields.OutputPath)
-	}
-	if fields.Formula != "" {
-		lines = append(lines, "formula: "+fields.Formula)
-	}
-
-	return strings.Join(lines, "\n")
 }
 
 // RoleConfig holds structured lifecycle configuration for role beads.
@@ -618,7 +828,7 @@ func ParseRoleConfig(description string) *RoleConfig {
 			config.PingTimeout = value
 			hasFields = true
 		case "consecutive_failures", "consecutive-failures", "consecutivefailures":
-			if n, err := parseIntValue(value); err == nil {
+			if n, err := parseIntField(value); err == nil {
 				config.ConsecutiveFailures = n
 				hasFields = true
 			}
@@ -659,13 +869,6 @@ func ParseWispTTLKey(key string) (string, bool) {
 	return "", false
 }
 
-// parseIntValue parses an integer from a string value.
-func parseIntValue(s string) (int, error) {
-	var n int
-	_, err := fmt.Sscanf(s, "%d", &n)
-	return n, err
-}
-
 // FormatRoleConfig formats RoleConfig as a string suitable for a role bead description.
 // Only non-empty/non-default fields are included.
 func FormatRoleConfig(config *RoleConfig) string {
@@ -704,12 +907,13 @@ func FormatRoleConfig(config *RoleConfig) string {
 }
 
 // ExpandRolePattern expands placeholders in a pattern string.
-// Supported placeholders: {town}, {rig}, {name}, {role}
-func ExpandRolePattern(pattern, townRoot, rig, name, role string) string {
+// Supported placeholders: {town}, {rig}, {name}, {role}, {prefix}
+func ExpandRolePattern(pattern, townRoot, rig, name, role, prefix string) string {
 	result := pattern
 	result = strings.ReplaceAll(result, "{town}", townRoot)
 	result = strings.ReplaceAll(result, "{rig}", rig)
 	result = strings.ReplaceAll(result, "{name}", name)
 	result = strings.ReplaceAll(result, "{role}", role)
+	result = strings.ReplaceAll(result, "{prefix}", prefix)
 	return result
 }

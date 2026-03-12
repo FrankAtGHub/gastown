@@ -2,12 +2,19 @@
 package session
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/runtime"
+	"github.com/steveyegge/gastown/internal/telemetry"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
@@ -111,6 +118,12 @@ type StartResult struct {
 	// Callers may need this for role-specific post-startup steps
 	// (e.g., handling fallback nudges, legacy fallback).
 	RuntimeConfig *config.RuntimeConfig
+
+	// RunID is the GASTA run identifier (GT_RUN) generated for this session.
+	// All telemetry events emitted within the session carry this ID, enabling
+	// waterfall correlation across prompts, BD calls, mail operations, and
+	// agent conversation events.
+	RunID string
 }
 
 // StartSession creates a tmux session following the standard Gas Town lifecycle.
@@ -128,7 +141,13 @@ type StartResult struct {
 // Role-specific concerns (issue validation, fallback nudges, pane-died hooks,
 // crew cycle bindings, etc.) should be handled by the caller before/after
 // calling StartSession.
-func StartSession(t *tmux.Tmux, cfg SessionConfig) (*StartResult, error) {
+func StartSession(t *tmux.Tmux, cfg SessionConfig) (_ *StartResult, retErr error) {
+	// Generate the GASTA run ID — the root identifier for all telemetry emitted
+	// by this agent session and its subprocesses (bd, mail, …).
+	runID := uuid.New().String()
+	ctx := telemetry.WithRunID(context.Background(), runID)
+
+	defer func() { telemetry.RecordSessionStart(ctx, cfg.SessionID, cfg.Role, retErr) }()
 	if cfg.SessionID == "" {
 		return nil, fmt.Errorf("SessionID is required")
 	}
@@ -169,10 +188,14 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (*StartResult, error) {
 		})
 	}
 
-	// Prepend extra env vars that need to be in the command (for initial shell inheritance).
-	if len(cfg.ExtraEnv) > 0 {
-		command = config.PrependEnv(command, cfg.ExtraEnv)
+	// Prepend GT_RUN (GASTA run ID) and any extra env vars into the command so
+	// that they are inherited by the initial shell before tmux SetEnvironment runs.
+	extraWithRun := make(map[string]string, len(cfg.ExtraEnv)+1)
+	for k, v := range cfg.ExtraEnv {
+		extraWithRun[k] = v
 	}
+	extraWithRun["GT_RUN"] = runID
+	command = config.PrependEnv(command, extraWithRun)
 
 	// 4. Create tmux session with command.
 	if err := t.NewSessionWithCommand(cfg.SessionID, cfg.WorkDir, command); err != nil {
@@ -191,12 +214,17 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (*StartResult, error) {
 		AgentName:        cfg.AgentName,
 		TownRoot:         cfg.TownRoot,
 		RuntimeConfigDir: cfg.RuntimeConfigDir,
+		Agent:            cfg.AgentOverride,
+		SessionName:      cfg.SessionID,
 	})
-	for k, v := range envVars {
-		_ = t.SetEnvironment(cfg.SessionID, k, v)
+	envVars = MergeRuntimeLivenessEnv(envVars, runtimeConfig)
+	for _, k := range mapKeysSorted(envVars) {
+		_ = t.SetEnvironment(cfg.SessionID, k, envVars[k])
 	}
-	for k, v := range cfg.ExtraEnv {
-		_ = t.SetEnvironment(cfg.SessionID, k, v)
+	// Set GT_RUN in the session environment so respawned processes also inherit it.
+	_ = t.SetEnvironment(cfg.SessionID, "GT_RUN", runID)
+	for _, k := range mapKeysSorted(cfg.ExtraEnv) {
+		_ = t.SetEnvironment(cfg.SessionID, k, cfg.ExtraEnv[k])
 	}
 
 	// 7. Apply theme.
@@ -221,14 +249,18 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (*StartResult, error) {
 		}
 	}
 
-	// 10. Accept bypass permissions warning.
+	// 10. Accept startup dialogs (workspace trust + bypass permissions).
 	if cfg.AcceptBypass {
-		_ = t.AcceptBypassPermissionsWarning(cfg.SessionID)
+		_ = t.AcceptStartupDialogs(cfg.SessionID)
 	}
 
-	// 11. Ready delay.
+	// 11. Ready delay: wait for agent to be fully ready at the prompt.
+	// Uses prompt-based polling for agents with ReadyPromptPrefix,
+	// falling back to ReadyDelayMs sleep for agents without prompt detection.
 	if cfg.ReadyDelay {
-		runtime.SleepForReadyDelay(runtimeConfig)
+		if err := t.WaitForRuntimeReady(cfg.SessionID, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", cfg.SessionID, err)
+		}
 	}
 
 	// 12. Verify session survived startup.
@@ -244,12 +276,65 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (*StartResult, error) {
 		}
 	}
 
-	// 13. Track PID for defense-in-depth orphan cleanup.
+	// 13. Record agent's pane_id for ZFC-compliant liveness checks (gt-qmsx).
+	// Declared pane identity replaces process-tree inference in IsRuntimeRunning
+	// and FindAgentPane. Legacy sessions without GT_PANE_ID fall back to scanning.
+	if paneID, err := t.GetPaneID(cfg.SessionID); err == nil {
+		_ = t.SetEnvironment(cfg.SessionID, "GT_PANE_ID", paneID)
+	}
+
+	// 14. Track PID for defense-in-depth orphan cleanup.
 	if cfg.TrackPID && cfg.TownRoot != "" {
 		_ = TrackSessionPID(cfg.TownRoot, cfg.SessionID, t)
 	}
 
-	return &StartResult{RuntimeConfig: runtimeConfig}, nil
+	// 14. Stream agent conversation events to VictoriaLogs (opt-in).
+	// Reads ~/.claude/projects/<hash>/<session>.jsonl and emits agent.event logs.
+	// Non-fatal: observability failures must never block agent startup.
+	if os.Getenv("GT_LOG_AGENT_OUTPUT") == "true" && os.Getenv("GT_OTEL_LOGS_URL") != "" {
+		if err := ActivateAgentLogging(cfg.SessionID, cfg.WorkDir, runID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: agent log watcher setup failed for %s: %v\n", cfg.SessionID, err)
+		}
+	}
+
+	// Record the agent instantiation event (GASTA root span).
+	// Done after session creation so we only emit on success.
+	RecordAgentInstantiateFromDir(ctx, runID, runtimeConfig.ResolvedAgent,
+		cfg.Role, cfg.AgentName, cfg.SessionID, cfg.RigName, cfg.TownRoot, "", cfg.WorkDir)
+
+	return &StartResult{RuntimeConfig: runtimeConfig, RunID: runID}, nil
+}
+
+// RecordAgentInstantiateFromDir resolves the git branch/commit from workDir and
+// emits the agent.instantiate root telemetry event. resolvedAgent defaults to
+// "claudecode" when empty. Use this instead of calling telemetry.RecordAgentInstantiate
+// directly to avoid duplicating the agentType/git-lookup boilerplate.
+func RecordAgentInstantiateFromDir(ctx context.Context, runID, resolvedAgent, role, agentName, sessionID, rigName, townRoot, issueID, workDir string) {
+	agentType := resolvedAgent
+	if agentType == "" {
+		agentType = "claudecode"
+	}
+	branch, commit := "", ""
+	if g := git.NewGit(workDir); g != nil {
+		if b, err := g.CurrentBranch(); err == nil {
+			branch = b
+		}
+		if c, err := g.Rev("HEAD"); err == nil {
+			commit = c
+		}
+	}
+	telemetry.RecordAgentInstantiate(ctx, telemetry.AgentInstantiateInfo{
+		RunID:     runID,
+		AgentType: agentType,
+		Role:      role,
+		AgentName: agentName,
+		SessionID: sessionID,
+		RigName:   rigName,
+		TownRoot:  townRoot,
+		IssueID:   issueID,
+		GitBranch: branch,
+		GitCommit: commit,
+	})
 }
 
 // StopSession stops a tmux session with optional graceful shutdown.
@@ -270,11 +355,67 @@ func StopSession(t *tmux.Tmux, sessionID string, graceful bool) error {
 		WaitForSessionExit(t, sessionID, constants.GracefulShutdownTimeout)
 	}
 
+	// Kill any detached agent-log watcher for this session before tearing down
+	// the tmux session, to avoid orphan processes accumulating over time.
+	DeactivateAgentLogging(sessionID)
+
 	if err := t.KillSessionWithProcesses(sessionID); err != nil {
 		return fmt.Errorf("killing session: %w", err)
 	}
 
 	return nil
+}
+
+func mapKeysSorted(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// MergeRuntimeLivenessEnv ensures liveness-critical env vars are present in the
+// tmux session environment table, even when agent resolution came from
+// workspace/default settings rather than an explicit --agent override.
+//
+// Call this after config.AgentEnv() to add GT_AGENT and GT_PROCESS_NAMES
+// before writing env vars to the tmux session via SetEnvironment.
+func MergeRuntimeLivenessEnv(envVars map[string]string, runtimeConfig *config.RuntimeConfig) map[string]string {
+	if envVars == nil {
+		envVars = make(map[string]string)
+	}
+	if runtimeConfig == nil {
+		return envVars
+	}
+
+	if _, hasGTAgent := envVars["GT_AGENT"]; !hasGTAgent && runtimeConfig.ResolvedAgent != "" {
+		envVars["GT_AGENT"] = runtimeConfig.ResolvedAgent
+	}
+
+	if _, hasProcessNames := envVars["GT_PROCESS_NAMES"]; !hasProcessNames {
+		agentForLookup := runtimeConfig.ResolvedAgent
+		commandForLookup := runtimeConfig.Command
+		if existing, ok := envVars["GT_AGENT"]; ok && existing != "" {
+			agentForLookup = existing
+			// When GT_AGENT was set by AgentOverride (differs from the
+			// workspace-resolved agent), the runtimeConfig.Command belongs
+			// to the workspace agent, not the override. Pass empty command
+			// so ResolveProcessNames uses the preset's own command.
+			if existing != runtimeConfig.ResolvedAgent {
+				commandForLookup = ""
+			}
+		}
+		processNames := config.ResolveProcessNames(agentForLookup, commandForLookup)
+		if len(processNames) > 0 {
+			envVars["GT_PROCESS_NAMES"] = strings.Join(processNames, ",")
+		}
+	}
+
+	return envVars
 }
 
 // KillExistingSession kills an existing session if one is found.
@@ -319,13 +460,6 @@ func buildCommand(cfg SessionConfig, prompt string) (string, error) {
 	}
 	return config.BuildAgentStartupCommand(
 		cfg.Role, cfg.RigName, cfg.TownRoot, cfg.RigPath, prompt), nil
-}
-
-// ReadyDelay sleeps for the runtime's configured readiness delay.
-// Exposed for callers that need to call it independently (e.g., when
-// using a pre-built StartResult).
-func ReadyDelay(rc *config.RuntimeConfig) {
-	runtime.SleepForReadyDelay(rc)
 }
 
 // ShutdownDelay is the standard delay after session creation.

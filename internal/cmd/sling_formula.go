@@ -1,17 +1,19 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/steveyegge/gastown/internal/cli"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/telemetry"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
@@ -56,14 +58,15 @@ func verifyFormulaExists(formulaName string) error {
 	// Try bd formula show (handles all formula file formats)
 	// Use Output() instead of Run() to detect bd exit 0 bug:
 	// when formula not found, bd may exit 0 but produce empty stdout.
-	cmd := exec.Command("bd", "formula", "show", formulaName, "--allow-stale")
-	if out, err := cmd.Output(); err == nil && len(out) > 0 {
+	// Stderr discarded — first attempt may fail expectedly (retry with mol- prefix).
+	if out, err := BdCmd("formula", "show", formulaName, "--allow-stale").
+		Stderr(io.Discard).Output(); err == nil && len(out) > 0 {
 		return nil
 	}
 
 	// Try with mol- prefix
-	cmd = exec.Command("bd", "formula", "show", "mol-"+formulaName, "--allow-stale")
-	if out, err := cmd.Output(); err == nil && len(out) > 0 {
+	if out, err := BdCmd("formula", "show", "mol-"+formulaName, "--allow-stale").
+		Stderr(io.Discard).Output(); err == nil && len(out) > 0 {
 		return nil
 	}
 
@@ -72,7 +75,7 @@ func verifyFormulaExists(formulaName string) error {
 
 // runSlingFormula handles standalone formula slinging.
 // Flow: cook → wisp → attach to hook → nudge
-func runSlingFormula(args []string) error {
+func runSlingFormula(ctx context.Context, args []string) error {
 	formulaName := args[0]
 
 	// Get town root early - needed for BEADS_DIR when running bd commands
@@ -113,7 +116,7 @@ func runSlingFormula(args []string) error {
 			return
 		}
 		fmt.Printf("%s Rolling back spawned polecat %s...\n", style.Warning.Render("⚠"), resolved.NewPolecatInfo.PolecatName)
-		rollbackSlingArtifactsFn(resolved.NewPolecatInfo, beadID, formulaWorkDir)
+		rollbackSlingArtifactsFn(resolved.NewPolecatInfo, beadID, formulaWorkDir, "")
 	}
 
 	if slingDryRun {
@@ -134,14 +137,15 @@ func runSlingFormula(args []string) error {
 
 	// Step 1: Cook the formula (ensures proto exists)
 	fmt.Printf("  Cooking formula...\n")
-	cookArgs := []string{"cook", formulaName}
-	cookCmd := exec.Command("bd", cookArgs...)
-	cookCmd.Dir = formulaWorkDir
-	cookCmd.Stderr = os.Stderr
-	if err := cookCmd.Run(); err != nil {
+	if err := BdCmd("cook", formulaName).
+		Dir(formulaWorkDir).
+		WithGTRoot(townRoot).
+		Run(); err != nil {
+		telemetry.RecordMolCook(ctx, formulaName, err)
 		rollbackSpawned("")
 		return fmt.Errorf("cooking formula: %w", err)
 	}
+	telemetry.RecordMolCook(ctx, formulaName, nil)
 
 	// Step 2: Create wisp instance (ephemeral)
 	fmt.Printf("  Creating wisp...\n")
@@ -151,10 +155,11 @@ func runSlingFormula(args []string) error {
 	}
 	wispArgs = append(wispArgs, "--json")
 
-	wispCmd := exec.Command("bd", wispArgs...)
-	wispCmd.Dir = formulaWorkDir
-	wispCmd.Stderr = os.Stderr // Show wisp errors to user
-	wispOut, err := wispCmd.Output()
+	wispOut, err := BdCmd(wispArgs...).
+		Dir(formulaWorkDir).
+		WithAutoCommit().
+		WithGTRoot(townRoot).
+		Output()
 	if err != nil {
 		rollbackSpawned("")
 		return fmt.Errorf("creating wisp: %w", err)
@@ -163,9 +168,11 @@ func runSlingFormula(args []string) error {
 	// Parse wisp output to get the root ID
 	wispRootID, err := parseWispIDFromJSON(wispOut)
 	if err != nil {
+		telemetry.RecordMolWisp(ctx, formulaName, "", "", err)
 		rollbackSpawned("")
 		return fmt.Errorf("parsing wisp output: %w", err)
 	}
+	telemetry.RecordMolWisp(ctx, formulaName, wispRootID, "", nil)
 
 	fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispRootID)
 
@@ -193,8 +200,11 @@ func runSlingFormula(args []string) error {
 	// is meaningless). attached_molecule is only meaningful when a formula-on-bead
 	// creates a wisp that's bonded to a separate base bead.
 	fieldUpdates := beadFieldUpdates{
-		Dispatcher: actor,
-		Args:       slingArgs,
+		Dispatcher:      actor,
+		Args:            slingArgs,
+		Vars:            append([]string(nil), slingVars...),
+		AttachedFormula: formulaName,
+		FormulaVars:     strings.Join(slingVars, "\n"),
 	}
 	if err := storeFieldsInBead(wispRootID, fieldUpdates); err != nil {
 		fmt.Printf("%s Could not store fields in bead: %v\n", style.Dim.Render("Warning:"), err)
@@ -212,24 +222,13 @@ func runSlingFormula(args []string) error {
 		targetPane = pane
 	}
 
-	// Create Dolt branch AFTER all sling writes (hook, formula, fields) are complete.
-	// CommitWorkingSet flushes working set to HEAD, then CreatePolecatBranch forks
-	// from HEAD — ensuring the polecat's branch includes all writes.
-	if resolved.NewPolecatInfo != nil && resolved.NewPolecatInfo.DoltBranch != "" {
-		if err := resolved.NewPolecatInfo.CreateDoltBranch(); err != nil {
-			// Rollback: unhook wisp, delete Dolt branch, clean up polecat worktree/agent bead
-			rollbackSlingArtifactsFn(resolved.NewPolecatInfo, wispRootID, "")
-			return fmt.Errorf("creating Dolt branch: %w", err)
-		}
-	}
-
 	// Start spawned polecat session now that hook is set.
 	// This ensures polecat sees the wisp when gt prime runs on session start.
 	if resolved.NewPolecatInfo != nil {
 		pane, err := resolved.NewPolecatInfo.StartSession()
 		if err != nil {
 			// Rollback: unhook wisp, delete Dolt branch, clean up polecat worktree/agent bead
-			rollbackSlingArtifactsFn(resolved.NewPolecatInfo, wispRootID, "")
+			rollbackSlingArtifactsFn(resolved.NewPolecatInfo, wispRootID, "", "")
 			return fmt.Errorf("starting polecat session: %w", err)
 		}
 		targetPane = pane

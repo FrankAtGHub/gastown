@@ -258,7 +258,7 @@ func runChannelShow(cmd *cobra.Command, args []string) error {
 			style.Dim.Render(msg.ID),
 			msg.From)
 		fmt.Printf("    %s\n",
-			style.Dim.Render(msg.Created.Format("2006-01-02 15:04")))
+			style.Dim.Render(msg.Created.Local().Format("2006-01-02 15:04")))
 		if msg.Body != "" {
 			// Show first line as preview
 			lines := strings.SplitN(msg.Body, "\n", 2)
@@ -310,7 +310,7 @@ func runChannelCreate(cmd *cobra.Command, args []string) error {
 	if channelRetainCount > 0 || channelRetainHours > 0 {
 		if err := b.UpdateChannelRetention(name, channelRetainCount, channelRetainHours); err != nil {
 			// Non-fatal: channel created but retention not set
-			fmt.Printf("Warning: could not set retention: %v\n", err)
+			style.PrintWarning("could not set retention: %v", err)
 		}
 	}
 

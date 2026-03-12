@@ -105,11 +105,7 @@ func TestGetAgentBeadID_UsesRigPrefix(t *testing.T) {
 }
 
 func TestPrimeFlagCombinations(t *testing.T) {
-	// Find the gt binary - we need to test CLI flag validation
-	gtBin, err := exec.LookPath("gt")
-	if err != nil {
-		t.Skip("gt binary not found in PATH")
-	}
+	gtBin := buildGT(t)
 
 	cases := []struct {
 		name      string
@@ -635,11 +631,7 @@ func TestExplain(t *testing.T) {
 
 // TestDryRunSkipsSideEffects tests that --dry-run skips various side effects via CLI.
 func TestDryRunSkipsSideEffects(t *testing.T) {
-	// Find the gt binary
-	gtBin, err := exec.LookPath("gt")
-	if err != nil {
-		t.Skip("gt binary not found in PATH")
-	}
+	gtBin := buildGT(t)
 
 	// Create a temp workspace
 	townRoot := t.TempDir()
@@ -683,5 +675,317 @@ func TestDryRunSkipsSideEffects(t *testing.T) {
 	// Check for explain output about dry-run (if workspace was valid enough to get there)
 	if strings.Contains(outputStr, "bd prime") && !strings.Contains(outputStr, "skipped") {
 		t.Logf("Note: output doesn't explicitly mention skipping bd prime: %s", outputStr)
+	}
+}
+
+// TestIsCompactResume tests the isCompactResume detection logic including
+// compaction-triggered handoff cycles (GH#1965).
+func TestIsCompactResume(t *testing.T) {
+	// Save and restore package-level state
+	origSource := primeHookSource
+	origReason := primeHandoffReason
+	defer func() {
+		primeHookSource = origSource
+		primeHandoffReason = origReason
+	}()
+
+	cases := []struct {
+		name          string
+		hookSource    string
+		handoffReason string
+		wantCompact   bool
+	}{
+		{
+			name:        "fresh_startup",
+			hookSource:  "startup",
+			wantCompact: false,
+		},
+		{
+			name:        "compact_source",
+			hookSource:  "compact",
+			wantCompact: true,
+		},
+		{
+			name:        "resume_source",
+			hookSource:  "resume",
+			wantCompact: true,
+		},
+		{
+			name:        "clear_source",
+			hookSource:  "clear",
+			wantCompact: false,
+		},
+		{
+			name:          "compaction_handoff_cycle",
+			hookSource:    "startup",
+			handoffReason: "compaction",
+			wantCompact:   true,
+		},
+		{
+			name:          "normal_handoff_not_compact",
+			hookSource:    "startup",
+			handoffReason: "",
+			wantCompact:   false,
+		},
+		{
+			name:          "idle_handoff_not_compact",
+			hookSource:    "startup",
+			handoffReason: "idle",
+			wantCompact:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primeHookSource = tc.hookSource
+			primeHandoffReason = tc.handoffReason
+
+			got := isCompactResume()
+			if got != tc.wantCompact {
+				t.Fatalf("isCompactResume() = %v, want %v (source=%q, reason=%q)",
+					got, tc.wantCompact, tc.hookSource, tc.handoffReason)
+			}
+		})
+	}
+}
+
+func TestHookSessionBeaconLines(t *testing.T) {
+	origStructured := primeStructuredSessionStartOutput
+	defer func() {
+		primeStructuredSessionStartOutput = origStructured
+	}()
+
+	primeStructuredSessionStartOutput = false
+	lines := hookSessionBeaconLines("abc", "startup")
+	if len(lines) != 2 || lines[0] != "[session:abc]" || lines[1] != "[source:startup]" {
+		t.Fatalf("hookSessionBeaconLines() = %v", lines)
+	}
+
+	primeStructuredSessionStartOutput = true
+	lines = hookSessionBeaconLines("abc", "startup")
+	if len(lines) != 0 {
+		t.Fatalf("hookSessionBeaconLines() in structured mode = %v, want no beacon lines", lines)
+	}
+}
+
+func TestFormatSessionMetadataLine(t *testing.T) {
+	origStructured := primeStructuredSessionStartOutput
+	defer func() { primeStructuredSessionStartOutput = origStructured }()
+
+	primeStructuredSessionStartOutput = false
+	if got := formatSessionMetadataLine("crew/quick", "sess-1"); !strings.HasPrefix(got, "[GAS TOWN] ") {
+		t.Fatalf("formatSessionMetadataLine() = %q, want bracketed prefix", got)
+	}
+
+	primeStructuredSessionStartOutput = true
+	if got := formatSessionMetadataLine("crew/quick", "sess-1"); strings.HasPrefix(got, "[") {
+		t.Fatalf("formatSessionMetadataLine() structured = %q, should not start with '['", got)
+	}
+}
+
+func TestStructuredOutputOnlyForSessionStart(t *testing.T) {
+	origStructured := primeStructuredSessionStartOutput
+	defer func() { primeStructuredSessionStartOutput = origStructured }()
+
+	// Simulate a non-SessionStart hook event (e.g., Stop)
+	primeStructuredSessionStartOutput = false
+	input := hookInput{HookEventName: "Stop"}
+	primeStructuredSessionStartOutput = input.HookEventName == "SessionStart"
+	if primeStructuredSessionStartOutput {
+		t.Fatal("primeStructuredSessionStartOutput should be false for HookEventName=Stop")
+	}
+
+	// Verify beacon lines are emitted (not suppressed) for non-SessionStart
+	lines := hookSessionBeaconLines("abc", "startup")
+	if len(lines) != 2 {
+		t.Fatalf("hookSessionBeaconLines() for non-SessionStart = %v, want 2 beacon lines", lines)
+	}
+
+	// Verify metadata line retains brackets for non-SessionStart
+	if got := formatSessionMetadataLine("crew/quick", "sess-1"); !strings.HasPrefix(got, "[GAS TOWN]") {
+		t.Fatalf("formatSessionMetadataLine() for non-SessionStart = %q, want bracketed prefix", got)
+	}
+}
+
+// TestCheckHandoffMarkerParsesReason tests that checkHandoffMarker correctly
+// parses the reason field from the marker file (GH#1965).
+func TestCheckHandoffMarkerParsesReason(t *testing.T) {
+	// Save and restore package-level state
+	origReason := primeHandoffReason
+	defer func() { primeHandoffReason = origReason }()
+
+	t.Run("marker_with_reason", func(t *testing.T) {
+		primeHandoffReason = ""
+		workDir := t.TempDir()
+
+		runtimeDir := filepath.Join(workDir, constants.DirRuntime)
+		if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+			t.Fatalf("create runtime dir: %v", err)
+		}
+
+		// Write marker with session ID and reason
+		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
+		if err := os.WriteFile(markerPath, []byte("test-session-456\ncompaction"), 0644); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+
+		// Capture stdout (checkHandoffMarker outputs the warning)
+		oldStdout := os.Stdout
+		_, w, _ := os.Pipe()
+		os.Stdout = w
+
+		checkHandoffMarker(workDir)
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		// Verify reason was parsed
+		if primeHandoffReason != "compaction" {
+			t.Fatalf("primeHandoffReason = %q, want %q", primeHandoffReason, "compaction")
+		}
+
+		// Verify marker was removed
+		if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+			t.Fatalf("handoff marker was not removed")
+		}
+	})
+
+	t.Run("marker_without_reason", func(t *testing.T) {
+		primeHandoffReason = ""
+		workDir := t.TempDir()
+
+		runtimeDir := filepath.Join(workDir, constants.DirRuntime)
+		if err := os.MkdirAll(runtimeDir, 0755); err != nil {
+			t.Fatalf("create runtime dir: %v", err)
+		}
+
+		// Write marker with session ID only (backward compat)
+		markerPath := filepath.Join(runtimeDir, constants.FileHandoffMarker)
+		if err := os.WriteFile(markerPath, []byte("test-session-789"), 0644); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+
+		oldStdout := os.Stdout
+		_, w, _ := os.Pipe()
+		os.Stdout = w
+
+		checkHandoffMarker(workDir)
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		// Verify reason is empty (backward compatible)
+		if primeHandoffReason != "" {
+			t.Fatalf("primeHandoffReason = %q, want empty", primeHandoffReason)
+		}
+	})
+
+	t.Run("no_marker", func(t *testing.T) {
+		primeHandoffReason = ""
+		workDir := t.TempDir()
+
+		checkHandoffMarker(workDir)
+
+		// Verify reason is still empty
+		if primeHandoffReason != "" {
+			t.Fatalf("primeHandoffReason = %q, want empty", primeHandoffReason)
+		}
+	})
+}
+
+// TestOutputContinuationDirective tests that the continuation directive
+// outputs the expected content without the full autonomous mode block (GH#1965).
+func TestOutputContinuationDirective(t *testing.T) {
+	t.Run("basic_bead", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		bead := &beads.Issue{
+			ID:    "gt-test123",
+			Title: "Test bead title",
+		}
+		outputContinuationDirective(bead, false)
+
+		w.Close()
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		os.Stdout = oldStdout
+		output := buf.String()
+
+		// Should contain continuation directive
+		if !strings.Contains(output, "CONTINUE HOOKED WORK") {
+			t.Fatalf("expected 'CONTINUE HOOKED WORK' in output, got: %s", output)
+		}
+		if !strings.Contains(output, "gt-test123") {
+			t.Fatalf("expected bead ID in output, got: %s", output)
+		}
+
+		// Should NOT contain autonomous mode language
+		if strings.Contains(output, "AUTONOMOUS WORK MODE") {
+			t.Fatalf("continuation directive should NOT contain 'AUTONOMOUS WORK MODE', got: %s", output)
+		}
+		if strings.Contains(output, "Announce:") {
+			t.Fatalf("continuation directive should NOT contain 'Announce:', got: %s", output)
+		}
+	})
+
+	t.Run("bead_with_molecule", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		bead := &beads.Issue{
+			ID:    "gt-mol456",
+			Title: "Molecule bead",
+		}
+		outputContinuationDirective(bead, true)
+
+		w.Close()
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		os.Stdout = oldStdout
+		output := buf.String()
+
+		if !strings.Contains(output, "bd mol current") {
+			t.Fatalf("expected molecule hint in output, got: %s", output)
+		}
+	})
+}
+
+func TestCheckSlungWork_StandaloneFormulaUsesWorkflowOutput(t *testing.T) {
+	ctx := RoleContext{Role: RoleCrew}
+	hookedBead := &beads.Issue{
+		ID:    "gt-wisp-xyz",
+		Title: "Standalone formula work",
+		Description: strings.Join([]string{
+			"attached_formula: mol-nonexistent",
+			`attached_vars: ["version=1.2.3"]`,
+		}, "\n"),
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	found := checkSlungWork(ctx, hookedBead)
+
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	os.Stdout = oldStdout
+	output := buf.String()
+
+	if !found {
+		t.Fatalf("checkSlungWork() = false, want true")
+	}
+	if !strings.Contains(output, "ATTACHED FORMULA") {
+		t.Fatalf("expected standalone formula hook to use workflow output, got:\n%s", output)
+	}
+	if strings.Contains(output, "Bead details:") {
+		t.Fatalf("expected standalone formula hook to skip plain bead preview, got:\n%s", output)
+	}
+	if !strings.Contains(output, "--var version=1.2.3") {
+		t.Fatalf("expected standalone formula context to be shown, got:\n%s", output)
 	}
 }

@@ -2,14 +2,13 @@
 package runtime
 
 import (
-	"github.com/steveyegge/gastown/internal/cli"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/steveyegge/gastown/internal/claude"
+	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/opencode"
+	"github.com/steveyegge/gastown/internal/hookutil"
+	"github.com/steveyegge/gastown/internal/hooks"
 	"github.com/steveyegge/gastown/internal/templates/commands"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -34,19 +33,14 @@ func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.Runtime
 		return nil
 	}
 
-	// 1. Provider-specific settings (settings.json for Claude, plugin for OpenCode)
-	// Settings are installed to settingsDir (gastown-managed parent for rig roles).
-	switch provider {
-	case "claude":
-		if err := claude.EnsureSettingsForRoleAt(settingsDir, role, rc.Hooks.Dir, rc.Hooks.SettingsFile); err != nil {
-			return err
-		}
-	case "opencode":
-		// OpenCode plugins stay in workDir — OpenCode has no --settings equivalent
-		// for path redirection, so it discovers plugins from the working directory.
-		if err := opencode.EnsurePluginAt(workDir, rc.Hooks.Dir, rc.Hooks.SettingsFile); err != nil {
-			return err
-		}
+	// 1. Provider-specific settings via generic installer.
+	// Reads template metadata from the preset and installs the appropriate template.
+	useSettingsDir := false
+	if preset := config.GetAgentPresetByName(provider); preset != nil {
+		useSettingsDir = preset.HooksUseSettingsDir
+	}
+	if err := hooks.InstallForRole(provider, settingsDir, workDir, role, rc.Hooks.Dir, rc.Hooks.SettingsFile, useSettingsDir); err != nil {
+		return err
 	}
 
 	// 2. Slash commands (agent-agnostic, uses shared body with provider-specific frontmatter)
@@ -61,25 +55,24 @@ func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.Runtime
 }
 
 // SessionIDFromEnv returns the runtime session ID, if present.
-// It checks GT_SESSION_ID_ENV first, then falls back to CLAUDE_SESSION_ID.
+// It checks GT_SESSION_ID_ENV first, then resolves from the current agent's preset,
+// and falls back to CLAUDE_SESSION_ID for backwards compatibility.
 func SessionIDFromEnv() string {
 	if envName := os.Getenv("GT_SESSION_ID_ENV"); envName != "" {
 		if sessionID := os.Getenv(envName); sessionID != "" {
 			return sessionID
 		}
 	}
+	// Use the current agent's session ID env var from its preset
+	if agentName := os.Getenv("GT_AGENT"); agentName != "" {
+		if preset := config.GetAgentPresetByName(agentName); preset != nil && preset.SessionIDEnv != "" {
+			if sessionID := os.Getenv(preset.SessionIDEnv); sessionID != "" {
+				return sessionID
+			}
+		}
+	}
+	// Backwards-compatible fallback for sessions without GT_AGENT
 	return os.Getenv("CLAUDE_SESSION_ID")
-}
-
-// SleepForReadyDelay sleeps for the runtime's configured readiness delay.
-func SleepForReadyDelay(rc *config.RuntimeConfig) {
-	if rc == nil || rc.Tmux == nil {
-		return
-	}
-	if rc.Tmux.ReadyDelayMs <= 0 {
-		return
-	}
-	time.Sleep(time.Duration(rc.Tmux.ReadyDelayMs) * time.Millisecond)
 }
 
 // StartupFallbackCommands returns commands that approximate Claude hooks when hooks are unavailable.
@@ -87,7 +80,7 @@ func StartupFallbackCommands(role string, rc *config.RuntimeConfig) []string {
 	if rc == nil {
 		rc = config.DefaultRuntimeConfig()
 	}
-	if rc.Hooks != nil && rc.Hooks.Provider != "" && rc.Hooks.Provider != "none" {
+	if rc.Hooks != nil && rc.Hooks.Provider != "" && rc.Hooks.Provider != "none" && !rc.Hooks.Informational {
 		return nil
 	}
 
@@ -115,19 +108,10 @@ func RunStartupFallback(t *tmux.Tmux, sessionID, role string, rc *config.Runtime
 }
 
 // isAutonomousRole returns true if the given role should automatically
-// inject mail check on startup. Autonomous roles (polecat, witness,
-// refinery, deacon, boot) operate without human prompting and need mail injection
-// to receive work assignments.
-//
-// Non-autonomous roles (mayor, crew) are human-guided and should not
-// have automatic mail injection to avoid confusion.
+// inject mail check on startup. Delegates to hookutil.IsAutonomousRole
+// for the single source of truth on role classification.
 func isAutonomousRole(role string) bool {
-	switch role {
-	case "polecat", "witness", "refinery", "deacon", "boot":
-		return true
-	default:
-		return false
-	}
+	return hookutil.IsAutonomousRole(role)
 }
 
 // DefaultPrimeWaitMs is the default wait time in milliseconds for non-hook agents
@@ -169,7 +153,7 @@ func GetStartupFallbackInfo(rc *config.RuntimeConfig) *StartupFallbackInfo {
 		rc = config.DefaultRuntimeConfig()
 	}
 
-	hasHooks := rc.Hooks != nil && rc.Hooks.Provider != "" && rc.Hooks.Provider != "none"
+	hasHooks := rc.Hooks != nil && rc.Hooks.Provider != "" && rc.Hooks.Provider != "none" && !rc.Hooks.Informational
 	hasPrompt := rc.PromptMode != "none"
 
 	info := &StartupFallbackInfo{}
@@ -204,4 +188,31 @@ func StartupNudgeContent() string {
 // BeaconPrimeInstruction returns the instruction to add to beacon for non-hook agents.
 func BeaconPrimeInstruction() string {
 	return "\n\nRun `" + cli.Name() + " prime` to initialize your context."
+}
+
+// RuntimeConfigWithMinDelay returns a shallow copy of rc with ReadyDelayMs set to
+// at least minMs, and ReadyPromptPrefix cleared. This forces WaitForRuntimeReady
+// to use the delay-based fallback path, ensuring the minimum wall-clock wait is
+// always enforced. Used for the gt prime wait where we need a guaranteed delay for
+// the agent to process the beacon and run gt prime — prompt detection would
+// short-circuit immediately (seeing the still-present prompt from the initial
+// readiness check) and bypass the intended delay floor.
+func RuntimeConfigWithMinDelay(rc *config.RuntimeConfig, minMs int) *config.RuntimeConfig {
+	if rc == nil {
+		return &config.RuntimeConfig{Tmux: &config.RuntimeTmuxConfig{ReadyDelayMs: minMs}}
+	}
+	cp := *rc
+	if cp.Tmux == nil {
+		cp.Tmux = &config.RuntimeTmuxConfig{ReadyDelayMs: minMs}
+	} else {
+		tmuxCp := *cp.Tmux
+		if tmuxCp.ReadyDelayMs < minMs {
+			tmuxCp.ReadyDelayMs = minMs
+		}
+		// Clear prompt prefix to force the delay-based path in WaitForRuntimeReady.
+		// The prime wait needs a guaranteed wall-clock delay, not prompt detection.
+		tmuxCp.ReadyPromptPrefix = ""
+		cp.Tmux = &tmuxCp
+	}
+	return &cp
 }

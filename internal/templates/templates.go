@@ -60,6 +60,7 @@ type RoleData struct {
 	DefaultBranch  string   // default branch for merges (e.g., "main", "develop")
 	Polecat        string   // polecat name (for polecat role)
 	Polecats       []string // list of polecats (for witness role)
+	DogName        string   // dog name (for dog role)
 	BeadsDir       string   // BEADS_DIR path
 	IssuePrefix    string   // beads issue prefix
 	MayorSession   string   // e.g., "gt-ai-mayor" - dynamic mayor session name
@@ -205,28 +206,6 @@ func CreateMayorCLAUDEmd(mayorDir, townRoot, townName, mayorSession, deaconSessi
 	}
 
 	return true, os.WriteFile(claudePath, []byte(content), 0644)
-}
-
-// GetAllRoleTemplates returns all role templates as a map of filename to content.
-func GetAllRoleTemplates() (map[string][]byte, error) {
-	entries, err := templateFS.ReadDir("roles")
-	if err != nil {
-		return nil, fmt.Errorf("reading roles directory: %w", err)
-	}
-
-	result := make(map[string][]byte)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		content, err := templateFS.ReadFile("roles/" + entry.Name())
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", entry.Name(), err)
-		}
-		result[entry.Name()] = content
-	}
-
-	return result, nil
 }
 
 // ProvisionCommands creates the .claude/commands/ directory with standard slash commands.

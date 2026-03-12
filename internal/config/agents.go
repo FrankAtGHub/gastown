@@ -29,12 +29,21 @@ const (
 	AgentAmp AgentPreset = "amp"
 	// AgentOpenCode is OpenCode multi-model CLI.
 	AgentOpenCode AgentPreset = "opencode"
+	// AgentCopilot is GitHub Copilot CLI.
+	AgentCopilot AgentPreset = "copilot"
+	// AgentPi is Pi Coding Agent (extension-based lifecycle).
+	AgentPi AgentPreset = "pi"
+	// AgentOmp is Oh My Pi (OMP) — Pi fork with hook-based lifecycle.
+	// Inspired by github.com/ProbabilityEngineer/pi-mono gastown integration.
+	AgentOmp AgentPreset = "omp"
 )
 
 // AgentPresetInfo contains the configuration details for an agent preset.
-// This extends the basic RuntimeConfig with agent-specific metadata.
+// This is the single source of truth for all agent-specific behavior.
+// Adding a new agent = adding a builtinPresets entry + optional hook installer.
+// No provider-string switch statements should exist outside this registry.
 type AgentPresetInfo struct {
-	// Name is the preset identifier (e.g., "claude", "gemini", "codex", "cursor", "auggie", "amp").
+	// Name is the preset identifier (e.g., "claude", "gemini", "codex", "cursor", "auggie", "amp", "copilot").
 	Name AgentPreset `json:"name"`
 
 	// Command is the CLI binary to invoke.
@@ -57,10 +66,15 @@ type AgentPresetInfo struct {
 	// Used for resuming sessions across restarts.
 	SessionIDEnv string `json:"session_id_env,omitempty"`
 
-	// ResumeFlag is the flag/subcommand for resuming sessions.
+	// ResumeFlag is the flag/subcommand for resuming a specific session.
 	// For claude/gemini: "--resume"
 	// For codex: "resume" (subcommand)
 	ResumeFlag string `json:"resume_flag,omitempty"`
+
+	// ContinueFlag is the flag for auto-resuming the most recent session.
+	// For claude: "--continue" (--resume without args opens interactive picker)
+	// If empty, --resume without a session ID is rejected with a clear error.
+	ContinueFlag string `json:"continue_flag,omitempty"`
 
 	// ResumeStyle indicates how to invoke resume:
 	// "flag" - pass as --resume <id> argument
@@ -71,12 +85,95 @@ type AgentPresetInfo struct {
 	SupportsHooks bool `json:"supports_hooks,omitempty"`
 
 	// SupportsForkSession indicates if --fork-session is available.
-	// Claude-only feature for seance command.
+	// Used by the seance command for session forking.
 	SupportsForkSession bool `json:"supports_fork_session,omitempty"`
 
 	// NonInteractive contains settings for non-interactive mode.
 	NonInteractive *NonInteractiveConfig `json:"non_interactive,omitempty"`
+
+	// --- Runtime default fields (replaces scattered default*() switch statements) ---
+
+	// PromptMode controls how the initial prompt is delivered: "arg" or "none".
+	// Defaults to "arg" if empty.
+	PromptMode string `json:"prompt_mode,omitempty"`
+
+	// ConfigDirEnv is the env var for the agent's config directory (e.g., "CLAUDE_CONFIG_DIR").
+	ConfigDirEnv string `json:"config_dir_env,omitempty"`
+
+	// ConfigDir is the top-level config directory (e.g., ".claude", ".opencode").
+	// Used for slash command provisioning. Empty means no command provisioning.
+	ConfigDir string `json:"config_dir,omitempty"`
+
+	// HooksProvider is the hooks framework provider type (e.g., "claude", "opencode").
+	// Empty or "none" means no hooks support.
+	HooksProvider string `json:"hooks_provider,omitempty"`
+
+	// HooksDir is the directory for hooks/settings (e.g., ".claude", ".opencode/plugins").
+	HooksDir string `json:"hooks_dir,omitempty"`
+
+	// HooksSettingsFile is the settings/plugin filename (e.g., "settings.json", "gastown.js").
+	HooksSettingsFile string `json:"hooks_settings_file,omitempty"`
+
+	// HooksInformational indicates hooks are instructions-only (not executable lifecycle hooks).
+	// For these providers, Gas Town sends startup fallback commands via nudge.
+	HooksInformational bool `json:"hooks_informational,omitempty"`
+
+	// HooksUseSettingsDir indicates the agent supports a separate settings directory
+	// (e.g., Claude's --settings flag). When true, hook templates are installed in
+	// settingsDir; when false, they're installed in workDir.
+	HooksUseSettingsDir bool `json:"hooks_use_settings_dir,omitempty"`
+
+	// ReadyPromptPrefix is the prompt prefix for tmux readiness detection (e.g., "❯ ").
+	// Empty means delay-based detection only.
+	ReadyPromptPrefix string `json:"ready_prompt_prefix,omitempty"`
+
+	// ReadyDelayMs is the delay-based readiness fallback in milliseconds.
+	ReadyDelayMs int `json:"ready_delay_ms,omitempty"`
+
+	// InstructionsFile is the instructions file for this agent (e.g., "CLAUDE.md", "AGENTS.md").
+	// Defaults to "AGENTS.md" if empty.
+	InstructionsFile string `json:"instructions_file,omitempty"`
+
+	// EmitsPermissionWarning indicates the agent shows a bypass-permissions warning on startup
+	// that needs to be acknowledged via tmux.
+	EmitsPermissionWarning bool `json:"emits_permission_warning,omitempty"`
+
+	// HasTurnBoundaryDrain indicates the agent's hooks system drains the nudge
+	// queue on every turn boundary (like Claude's UserPromptSubmit hook). When
+	// false, a background nudge-poller process is started to periodically drain
+	// the queue and inject via tmux.
+	HasTurnBoundaryDrain bool `json:"has_turn_boundary_drain,omitempty"`
+	// ACP is the configuration for ACP (Agent Communication Protocol) support.
+	// nil means the agent does not support ACP.
+	ACP *ACPConfig `json:"acp,omitempty"`
 }
+
+// ACPConfig contains configuration for ACP (Agent Communication Protocol) support.
+type ACPConfig struct {
+	// Mode specifies how ACP is invoked:
+	// - "subcommand" (default): Agent has ACP as a subcommand (e.g., "opencode acp")
+	// - "native": Agent is a native ACP binary (e.g., "claude-agent-acp")
+	// - "flag": Agent uses a flag to enable ACP (e.g., "gemini --acp")
+	// If empty, defaults to "subcommand" if Command is set, otherwise "native".
+	Mode string `json:"mode,omitempty"`
+
+	// Command is the subcommand for ACP (e.g., "acp").
+	// Used when Mode is "subcommand".
+	Command string `json:"command,omitempty"`
+
+	// Args are additional arguments for the ACP command.
+	// For "subcommand" mode, appended after the subcommand.
+	// For "flag" mode, these are the flags to enable ACP.
+	// For "native" mode, ignored (binary is already ACP).
+	Args []string `json:"args,omitempty"`
+}
+
+// ACP mode constants.
+const (
+	ACPModeSubcommand = "subcommand" // Agent has ACP as subcommand (e.g., "opencode acp")
+	ACPModeNative      = "native"    // Agent is native ACP binary (e.g., "claude-agent-acp")
+	ACPModeFlag        = "flag"      // Agent uses flag to enable ACP (e.g., "gemini --acp")
+)
 
 // NonInteractiveConfig contains settings for running agents non-interactively.
 type NonInteractiveConfig struct {
@@ -104,6 +201,7 @@ type AgentRegistry struct {
 const CurrentAgentRegistryVersion = 1
 
 // builtinPresets contains the default presets for supported agents.
+// Each preset is the single source of truth for its agent's behavior.
 var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 	AgentClaude: {
 		Name:                AgentClaude,
@@ -112,10 +210,24 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ProcessNames:        []string{"node", "claude"}, // Claude runs as Node.js
 		SessionIDEnv:        "CLAUDE_SESSION_ID",
 		ResumeFlag:          "--resume",
+		ContinueFlag:        "--continue",
 		ResumeStyle:         "flag",
 		SupportsHooks:       true,
 		SupportsForkSession: true,
 		NonInteractive:      nil, // Claude is native non-interactive
+		// Runtime defaults
+		PromptMode:             "arg",
+		ConfigDirEnv:           "CLAUDE_CONFIG_DIR",
+		ConfigDir:              ".claude",
+		HooksProvider:          "claude",
+		HooksDir:               ".claude",
+		HooksSettingsFile:      "settings.json",
+		HooksUseSettingsDir:    true,
+		ReadyPromptPrefix:      "❯ ",
+		ReadyDelayMs:           10000,
+		InstructionsFile:       "CLAUDE.md",
+		EmitsPermissionWarning: true,
+		HasTurnBoundaryDrain:   true,
 	},
 	AgentGemini: {
 		Name:                AgentGemini,
@@ -131,13 +243,21 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			PromptFlag: "-p",
 			OutputFlag: "--output-format json",
 		},
+		// Runtime defaults
+		PromptMode:        "arg",
+		ConfigDir:         ".gemini",
+		HooksProvider:     "gemini",
+		HooksDir:          ".gemini",
+		HooksSettingsFile: "settings.json",
+		ReadyDelayMs:      5000,
+		InstructionsFile:  "AGENTS.md",
 	},
 	AgentCodex: {
 		Name:                AgentCodex,
 		Command:             "codex",
-		Args:                []string{"--yolo"},
+		Args:                []string{"--dangerously-bypass-approvals-and-sandbox"},
 		ProcessNames:        []string{"codex"}, // Codex CLI binary
-		SessionIDEnv:        "", // Codex captures from JSONL output
+		SessionIDEnv:        "",                // Codex captures from JSONL output
 		ResumeFlag:          "resume",
 		ResumeStyle:         "subcommand",
 		SupportsHooks:       false, // Use env/files instead
@@ -146,6 +266,10 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			Subcommand: "exec",
 			OutputFlag: "--json",
 		},
+		// Runtime defaults
+		PromptMode:       "none",
+		ReadyDelayMs:     3000,
+		InstructionsFile: "AGENTS.md",
 	},
 	AgentCursor: {
 		Name:                AgentCursor,
@@ -155,12 +279,19 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		SessionIDEnv:        "", // Uses --resume with chatId directly
 		ResumeFlag:          "--resume",
 		ResumeStyle:         "flag",
-		SupportsHooks:       false, // TODO: verify hooks support
+		SupportsHooks:       true,
 		SupportsForkSession: false,
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "--output-format json",
 		},
+		// Runtime defaults
+		PromptMode:        "arg",
+		ConfigDir:         ".cursor",
+		HooksProvider:     "cursor",
+		HooksDir:          ".cursor",
+		HooksSettingsFile: "hooks.json",
+		InstructionsFile:  "AGENTS.md",
 	},
 	AgentAuggie: {
 		Name:                AgentAuggie,
@@ -172,6 +303,9 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ResumeStyle:         "flag",
 		SupportsHooks:       false,
 		SupportsForkSession: false,
+		// Runtime defaults
+		PromptMode:       "arg",
+		InstructionsFile: "AGENTS.md",
 	},
 	AgentAmp: {
 		Name:                AgentAmp,
@@ -183,6 +317,9 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		ResumeStyle:         "subcommand", // 'amp threads continue <threadId>'
 		SupportsHooks:       false,
 		SupportsForkSession: false,
+		// Runtime defaults
+		PromptMode:       "arg",
+		InstructionsFile: "AGENTS.md",
 	},
 	AgentOpenCode: {
 		Name:    AgentOpenCode,
@@ -193,14 +330,87 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			"OPENCODE_PERMISSION": `{"*":"allow"}`,
 		},
 		ProcessNames:        []string{"opencode", "node", "bun"}, // Runs as Node.js or Bun
-		SessionIDEnv:        "",                           // OpenCode manages sessions internally
-		ResumeFlag:          "",                           // No resume support yet
+		SessionIDEnv:        "",                                  // OpenCode manages sessions internally
+		ResumeFlag:          "",                                  // No resume support yet
 		ResumeStyle:         "",
-		SupportsHooks:       true,  // Uses .opencode/plugin/gastown.js
+		SupportsHooks:       true, // Uses .opencode/plugins/gastown.js
 		SupportsForkSession: false,
 		NonInteractive: &NonInteractiveConfig{
 			Subcommand: "run",
 			OutputFlag: "--format json",
+		},
+		// Runtime defaults
+		PromptMode:        "arg",
+		ConfigDir:         ".opencode",
+		HooksProvider:     "opencode",
+		HooksDir:          ".opencode/plugins",
+		HooksSettingsFile: "gastown.js",
+		ReadyDelayMs:      8000,
+		InstructionsFile:  "AGENTS.md",
+		// ACP support
+		ACP: &ACPConfig{
+			Command: "acp",
+		},
+	},
+	AgentCopilot: {
+		Name:                AgentCopilot,
+		Command:             "copilot",
+		Args:                []string{"--yolo"},
+		ProcessNames:        []string{"copilot"}, // Copilot CLI binary (Node.js but reports as "copilot")
+		SessionIDEnv:        "",                  // Session IDs stored on disk, not in env
+		ResumeFlag:          "--resume",
+		ResumeStyle:         "flag",
+		SupportsHooks:       true,  // Copilot CLI supports .github/hooks/*.json lifecycle hooks
+		SupportsForkSession: false,
+		NonInteractive: &NonInteractiveConfig{
+			PromptFlag: "-p",
+		},
+		// Runtime defaults
+		PromptMode:         "arg",
+		ConfigDir:          ".copilot",
+		HooksProvider:      "copilot",
+		HooksDir:           ".github/hooks",
+		HooksSettingsFile:  "gastown.json",
+		HooksInformational: false,
+		ReadyPromptPrefix:  "❯ ",
+		ReadyDelayMs:       5000,
+		InstructionsFile:   "AGENTS.md",
+	},
+	AgentPi: {
+		Name:                AgentPi,
+		Command:             "pi",
+		Args:                []string{"-e", ".pi/extensions/gastown-hooks.js"},
+		ProcessNames:        []string{"pi", "node", "bun"}, // Pi runs as Node.js
+		SessionIDEnv:        "PI_SESSION_ID",
+		ResumeFlag:          "", // No resume support yet
+		ResumeStyle:         "",
+		SupportsHooks:       true, // Uses .pi/extensions/gastown-hooks.js
+		HooksProvider:       "pi",
+		HooksDir:            ".pi/extensions",
+		HooksSettingsFile:   "gastown-hooks.js",
+		SupportsForkSession: false,
+		NonInteractive: &NonInteractiveConfig{
+			PromptFlag: "-p",
+			OutputFlag: "--no-session",
+		},
+		// Pi's Node.js TUI takes several seconds to initialize before it can
+		// receive tmux input. Without a readiness delay, the startup nudge
+		// arrives before the TUI is ready and gets dropped silently.
+		ReadyDelayMs: 8000,
+	},
+	AgentOmp: {
+		Name:                AgentOmp,
+		Command:             "omp",
+		Args:                []string{"--hook", ".omp/hooks/gastown-hook.ts"},
+		ProcessNames:        []string{"omp", "node", "bun"},
+		SessionIDEnv:        "OMP_SESSION_ID",
+		SupportsHooks:       true,
+		HooksProvider:       "omp",
+		HooksDir:            ".omp/hooks",
+		HooksSettingsFile:   "gastown-hook.ts",
+		SupportsForkSession: false,
+		NonInteractive: &NonInteractiveConfig{
+			PromptFlag: "--prompt",
 		},
 	},
 }
@@ -232,13 +442,6 @@ func initRegistryLocked() {
 		globalRegistry.Agents[string(name)] = preset
 	}
 	registryInitialized = true
-}
-
-// ensureRegistry ensures the registry is initialized for read operations.
-func ensureRegistry() {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	initRegistryLocked()
 }
 
 // loadAgentRegistryFromPath loads agent definitions from a JSON file and merges with built-ins.
@@ -312,26 +515,26 @@ func LoadRigAgentRegistry(path string) error {
 // GetAgentPreset returns the preset info for a given agent name.
 // Returns nil if the preset is not found.
 func GetAgentPreset(name AgentPreset) *AgentPresetInfo {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	return globalRegistry.Agents[string(name)]
 }
 
 // GetAgentPresetByName returns the preset info by string name.
 // Returns nil if not found, allowing caller to fall back to defaults.
 func GetAgentPresetByName(name string) *AgentPresetInfo {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	return globalRegistry.Agents[name]
 }
 
 // ListAgentPresets returns all known agent preset names.
 func ListAgentPresets() []string {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	names := make([]string, 0, len(globalRegistry.Agents))
 	for name := range globalRegistry.Agents {
 		names = append(names, name)
@@ -365,9 +568,9 @@ func RuntimeConfigFromPreset(preset AgentPreset) *RuntimeConfig {
 
 	rc := &RuntimeConfig{
 		Provider: string(info.Name),
-		Command: info.Command,
-		Args:    append([]string(nil), info.Args...), // Copy to avoid mutation
-		Env:     envCopy,
+		Command:  info.Command,
+		Args:     append([]string(nil), info.Args...), // Copy to avoid mutation
+		Env:      envCopy,
 	}
 
 	// Resolve command path for claude preset (handles alias installations)
@@ -398,7 +601,7 @@ func BuildResumeCommand(agentName, sessionID string) string {
 	// Add resume based on style
 	switch info.ResumeStyle {
 	case "subcommand":
-		// e.g., "codex resume <session_id> --yolo"
+		// e.g., "codex resume <session_id> --dangerously-bypass-approvals-and-sandbox"
 		return info.Command + " " + info.ResumeFlag + " " + sessionID + " " + strings.Join(args, " ")
 	case "flag":
 		fallthrough
@@ -437,6 +640,55 @@ func GetProcessNames(agentName string) []string {
 	return info.ProcessNames
 }
 
+// ResolveProcessNames determines the correct process names for liveness detection
+// given an agent name and the actual command binary. This handles custom agents
+// that shadow built-in preset names (e.g., a custom "codex" agent that runs
+// "opencode" instead of the built-in "codex" binary).
+//
+// Resolution order:
+//  1. If agentName matches a built-in preset AND the preset's Command matches
+//     the actual command → use the preset's ProcessNames (no mismatch).
+//  2. Otherwise, find a built-in preset whose Command matches the actual command
+//     and use its ProcessNames (custom agent using a known launcher).
+//  3. Fallback: [command] (fully custom binary).
+func ResolveProcessNames(agentName, command string) []string {
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
+
+	// Normalize command to basename for comparison. Commands may be
+	// path-resolved (e.g., "/home/user/.claude/local/claude" from
+	// resolveClaudePath), but built-in presets store bare names ("claude").
+	// Process matching (processMatchesNames, pgrep) also uses basenames.
+	cmdBase := command
+	if command != "" {
+		cmdBase = filepath.Base(command)
+	}
+
+	// Check if agentName matches a built-in/registered preset with matching command.
+	// Compare against both the raw command and basename to handle registry entries
+	// that store absolute-path commands (e.g., "/opt/bin/my-tool").
+	if info, ok := globalRegistry.Agents[agentName]; ok && len(info.ProcessNames) > 0 {
+		if info.Command == command || info.Command == cmdBase || filepath.Base(info.Command) == cmdBase || cmdBase == "" {
+			return info.ProcessNames
+		}
+	}
+
+	// Agent name doesn't match or command differs — look up by command
+	if cmdBase != "" {
+		for _, info := range globalRegistry.Agents {
+			if (info.Command == command || filepath.Base(info.Command) == cmdBase) && len(info.ProcessNames) > 0 {
+				return info.ProcessNames
+			}
+		}
+		// Unknown command — use the binary basename itself
+		return []string{cmdBase}
+	}
+
+	// No command provided, agent not in registry — Claude defaults
+	return []string{"node", "claude"}
+}
+
 // MergeWithPreset applies preset defaults to a RuntimeConfig.
 // User-specified values take precedence over preset defaults.
 // Returns a new RuntimeConfig without modifying the original.
@@ -469,9 +721,9 @@ func (rc *RuntimeConfig) MergeWithPreset(preset AgentPreset) *RuntimeConfig {
 
 // IsKnownPreset checks if a string is a known agent preset name.
 func IsKnownPreset(name string) bool {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	_, ok := globalRegistry.Agents[name]
 	return ok
 }
@@ -520,4 +772,159 @@ func ResetRegistryForTesting() {
 	globalRegistry = nil
 	loadedPaths = make(map[string]bool)
 	registryInitialized = false
+}
+
+// RegisterAgentForTesting adds a custom agent preset to the registry.
+// The registry is initialized first if needed. Intended for test use only.
+func RegisterAgentForTesting(name string, info AgentPresetInfo) {
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
+	globalRegistry.Agents[name] = &info
+}
+
+// ResolveACPConfig determines the correct ACP configuration for an agent
+// given its name and the actual command binary. This handles custom agents
+// that use an ACP-compatible launcher like "opencode".
+func ResolveACPConfig(agentName, command string) *ACPConfig {
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
+
+	// 1. Check if agentName matches a registered preset with ACP config.
+	if info, ok := globalRegistry.Agents[agentName]; ok && info.ACP != nil && info.ACP.Command != "" {
+		return info.ACP
+	}
+
+	// 2. Otherwise, find a registered preset whose Command matches and has ACP.
+	if command != "" {
+		cmdBase := filepath.Base(command)
+		for _, info := range globalRegistry.Agents {
+			if (info.Command == command || filepath.Base(info.Command) == cmdBase) && info.ACP != nil && info.ACP.Command != "" {
+				return info.ACP
+			}
+		}
+	}
+
+	return nil
+}
+
+// SupportsACP checks if an agent supports ACP (Agent Communication Protocol).
+// Returns true if the agent has ACP configured.
+func SupportsACP(agentName string) bool {
+	info := GetAgentPresetByName(agentName)
+	if info == nil {
+		return false
+	}
+	if info.ACP != nil && info.ACP.Command != "" {
+		return true
+	}
+	// Fallback: check if the command itself supports ACP
+	return ResolveACPConfig(agentName, info.Command) != nil
+}
+
+// GetACPConfig returns the ACP configuration for an agent.
+// Returns nil if the agent doesn't support ACP.
+func GetACPConfig(agentName string) *ACPConfig {
+	info := GetAgentPresetByName(agentName)
+	if info == nil {
+		return nil
+	}
+	return ResolveACPConfig(agentName, info.Command)
+}
+
+// GetACPCommand returns the ACP subcommand for an agent.
+// Returns empty string if the agent doesn't support ACP.
+func GetACPCommand(agentName string) string {
+	config := GetACPConfig(agentName)
+	if config == nil {
+		return ""
+	}
+	return config.Command
+}
+
+// GetACPArgs returns the ACP arguments for an agent.
+// Returns nil if the agent doesn't support ACP.
+func GetACPArgs(agentName string) []string {
+	config := GetACPConfig(agentName)
+	if config == nil {
+		return nil
+	}
+	return config.Args
+}
+
+// RuntimeConfigSupportsACP checks if a RuntimeConfig supports ACP.
+// This is used for custom agents defined in config.json that may have
+// their own ACP configuration or inherit from a preset.
+// Returns true if the RuntimeConfig has ACP configured.
+//
+// ACP can be configured in three ways:
+// 1. Native mode: { "command": "claude-agent-acp", "acp": { "mode": "native" } }
+//    The binary is already an ACP adapter, no transformation needed.
+// 2. Subcommand pattern: { "command": "opencode", "acp": { "command": "acp" } }
+//    Results in: opencode acp
+// 3. Flag pattern: { "command": "gemini", "acp": { "args": ["--acp"] } }
+//    Results in: gemini --acp
+func RuntimeConfigSupportsACP(rc *RuntimeConfig) bool {
+	if rc == nil {
+		return false
+	}
+	// If the RuntimeConfig has explicit ACP config, use it
+	if rc.ACP != nil {
+		// Native mode: the binary is already an ACP adapter
+		if rc.ACP.Mode == ACPModeNative {
+			return true
+		}
+		// Subcommand mode: has a subcommand to invoke ACP
+		if rc.ACP.Command != "" {
+			return true
+		}
+		// Flag mode: has flags to enable ACP
+		if len(rc.ACP.Args) > 0 {
+			return true
+		}
+	}
+	// Fallback: check if the command matches a preset with ACP support
+	if rc.Command != "" {
+		return ResolveACPConfig("", rc.Command) != nil
+	}
+	return false
+}
+
+// GetACPConfigFromRuntime returns the ACP configuration from a RuntimeConfig.
+// This is used for custom agents defined in config.json that may have
+// their own ACP configuration or inherit from a preset.
+// Returns nil if the RuntimeConfig doesn't support ACP.
+//
+// ACP can be configured in three ways:
+// 1. Native mode: { "command": "claude-agent-acp", "acp": { "mode": "native" } }
+//    The binary is already an ACP adapter, no transformation needed.
+// 2. Subcommand pattern: { "command": "opencode", "acp": { "command": "acp" } }
+//    Results in: opencode acp
+// 3. Flag pattern: { "command": "gemini", "acp": { "args": ["--experimental-acp"] } }
+//    Results in: gemini --experimental-acp
+func GetACPConfigFromRuntime(rc *RuntimeConfig) *ACPConfig {
+	if rc == nil {
+		return nil
+	}
+	// If the RuntimeConfig has explicit ACP config, use it
+	if rc.ACP != nil {
+		// Native mode: the binary is already an ACP adapter
+		if rc.ACP.Mode == ACPModeNative {
+			return rc.ACP
+		}
+		// Subcommand mode: has a subcommand to invoke ACP
+		if rc.ACP.Command != "" {
+			return rc.ACP
+		}
+		// Flag mode: has flags to enable ACP
+		if len(rc.ACP.Args) > 0 {
+			return rc.ACP
+		}
+	}
+	// Fallback: check if the command matches a preset with ACP support
+	if rc.Command != "" {
+		return ResolveACPConfig("", rc.Command)
+	}
+	return nil
 }

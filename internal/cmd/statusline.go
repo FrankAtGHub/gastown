@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/mail"
+	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
@@ -126,7 +127,7 @@ func runWorkerStatusLine(t *tmux.Tmux, session, rigName, polecat, crew, issue st
 	// Priority 2: Fall back to GT_ISSUE env var or in_progress beads
 	currentWork := issue
 	if currentWork == "" && hookedWork == "" && session != "" {
-		currentWork = getCurrentWork(t, session, 40)
+		currentWork = getCurrentWork(t, session, identity, 40)
 	}
 
 	// Show hooked work (takes precedence)
@@ -292,12 +293,7 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		parts = append(parts, AgentTypeIcons[AgentDeacon])
 	}
 
-	// Build rig status display with LED indicators
-	// 🟢 = both witness and refinery running (fully active)
-	// 🟡 = one of witness/refinery running (partially active)
-	// 🅿️ = parked (nothing running, intentionally paused)
-	// 🛑 = docked (nothing running, global shutdown)
-	// ⚫ = operational but nothing running (unexpected state)
+	// Build rig status display with LED indicators (see GetRigLED for definitions)
 
 	// Create sortable rig list
 	type rigInfo struct {
@@ -306,6 +302,11 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 	}
 	var rigs []rigInfo
 	for rigName, status := range rigStatuses {
+		// Skip docked rigs — they're intentionally disabled and don't need display.
+		// Reserve 🛑 for error states (crashed agents, unreachable Dolt, etc.).
+		if status.opState == "DOCKED" {
+			continue
+		}
 		rigs = append(rigs, rigInfo{name: rigName, status: status})
 	}
 
@@ -350,24 +351,7 @@ func runMayorStatusLine(t *tmux.Tmux) error {
 		lastGroup = currentGroup
 
 		status := rig.status
-		var led string
-
-		// Check if processes are running first (regardless of operational state)
-		if status.hasWitness && status.hasRefinery {
-			led = "🟢" // Both running - fully active
-		} else if status.hasWitness || status.hasRefinery {
-			led = "🟡" // One running - partially active
-		} else {
-			// Nothing running - show operational state
-			switch status.opState {
-			case "PARKED":
-				led = "🅿️" // Parked - intentionally paused
-			case "DOCKED":
-				led = "🛑" // Docked - global shutdown
-			default:
-				led = "⚫" // Operational but nothing running
-			}
-		}
+		led := GetRigLED(status.hasWitness, status.hasRefinery, status.opState)
 
 		// All icons get 1 space, Park gets 2
 		space := " "
@@ -485,15 +469,15 @@ func runDeaconStatusLine(t *tmux.Tmux) error {
 // Note: Polecats excluded - their sessions are ephemeral and idle detection is a GC concern
 func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 	if rigName == "" {
-		// Try to extract from session name: gt-<rig>-witness
-		if strings.HasSuffix(statusLineSession, "-witness") && strings.HasPrefix(statusLineSession, "gt-") {
-			rigName = strings.TrimPrefix(strings.TrimSuffix(statusLineSession, "-witness"), "gt-")
+		// Try to extract from session name: <prefix>-witness
+		if identity, err := session.ParseSessionName(statusLineSession); err == nil && identity.Role == session.RoleWitness {
+			rigName = identity.Rig
 		}
 	}
 
 	// Get town root from witness pane's working directory
 	var townRoot string
-	sessionName := fmt.Sprintf("gt-%s-witness", rigName)
+	sessionName := session.WitnessSessionName(session.PrefixFor(rigName))
 	paneDir, err := t.GetPaneWorkDir(sessionName)
 	if err == nil && paneDir != "" {
 		townRoot, _ = workspace.Find(paneDir)
@@ -552,10 +536,9 @@ func runWitnessStatusLine(t *tmux.Tmux, rigName string) error {
 // Shows: MQ length, current item, hook or mail preview
 func runRefineryStatusLine(t *tmux.Tmux, rigName string) error {
 	if rigName == "" {
-		// Try to extract from session name: gt-<rig>-refinery
-		if strings.HasPrefix(statusLineSession, "gt-") && strings.HasSuffix(statusLineSession, "-refinery") {
-			rigName = strings.TrimPrefix(statusLineSession, "gt-")
-			rigName = strings.TrimSuffix(rigName, "-refinery")
+		// Try to extract from session name: <prefix>-refinery
+		if identity, err := session.ParseSessionName(statusLineSession); err == nil && identity.Role == session.RoleRefinery {
+			rigName = identity.Rig
 		}
 	}
 
@@ -566,7 +549,7 @@ func runRefineryStatusLine(t *tmux.Tmux, rigName string) error {
 
 	// Get town root from refinery pane's working directory
 	var townRoot string
-	sessionName := fmt.Sprintf("gt-%s-refinery", rigName)
+	sessionName := session.RefinerySessionName(session.PrefixFor(rigName))
 	paneDir, err := t.GetPaneWorkDir(sessionName)
 	if err == nil && paneDir != "" {
 		townRoot, _ = workspace.Find(paneDir)
@@ -716,9 +699,9 @@ func getHookedWork(identity string, maxLen int, beadsDir string) string {
 	return display
 }
 
-// getCurrentWork returns a truncated title of the first in_progress issue.
+// getCurrentWork returns a truncated title of the first in_progress issue assigned to identity.
 // Uses the pane's working directory to find the beads.
-func getCurrentWork(t *tmux.Tmux, session string, maxLen int) string {
+func getCurrentWork(t *tmux.Tmux, session string, identity string, maxLen int) string {
 	// Get the pane's working directory
 	workDir, err := t.GetPaneWorkDir(session)
 	if err != nil || workDir == "" {
@@ -731,10 +714,11 @@ func getCurrentWork(t *tmux.Tmux, session string, maxLen int) string {
 		return ""
 	}
 
-	// Query beads for in_progress issues
+	// Query beads for in_progress issues assigned to this agent
 	b := beads.New(workDir)
 	issues, err := b.List(beads.ListOptions{
 		Status:   "in_progress",
+		Assignee: identity,
 		Priority: -1,
 	})
 	if err != nil || len(issues) == 0 {

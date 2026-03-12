@@ -1,11 +1,24 @@
 package mail
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/nudge"
+	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/testutil"
+	"github.com/steveyegge/gastown/internal/tmux"
 )
 
 func TestDetectTownRoot(t *testing.T) {
@@ -90,6 +103,14 @@ func TestIsTownLevelAddress(t *testing.T) {
 }
 
 func TestAddressToSessionIDs(t *testing.T) {
+	// Set up prefix registry for test
+	reg := session.NewPrefixRegistry()
+	reg.Register("gt", "gastown")
+	reg.Register("bd", "beads")
+	old := session.DefaultRegistry()
+	session.SetDefaultRegistry(reg)
+	defer session.SetDefaultRegistry(old)
+
 	tests := []struct {
 		address string
 		want    []string
@@ -103,16 +124,16 @@ func TestAddressToSessionIDs(t *testing.T) {
 		{"deacon", []string{"hq-deacon"}},
 
 		// Rig singletons - single session (no crew/polecat ambiguity)
-		{"gastown/refinery", []string{"gt-gastown-refinery"}},
-		{"beads/witness", []string{"gt-beads-witness"}},
+		{"gastown/refinery", []string{"gt-refinery"}},
+		{"beads/witness", []string{"bd-witness"}},
 
 		// Ambiguous addresses - try both crew and polecat variants
-		{"gastown/Toast", []string{"gt-gastown-crew-Toast", "gt-gastown-Toast"}},
-		{"beads/ruby", []string{"gt-beads-crew-ruby", "gt-beads-ruby"}},
+		{"gastown/Toast", []string{"gt-crew-Toast", "gt-Toast"}},
+		{"beads/ruby", []string{"bd-crew-ruby", "bd-ruby"}},
 
 		// Explicit crew/polecat - single session
-		{"gastown/crew/max", []string{"gt-gastown-crew-max"}},
-		{"gastown/polecats/nux", []string{"gt-gastown-polecats-nux"}},
+		{"gastown/crew/max", []string{"gt-crew-max"}},
+		{"gastown/polecats/nux", []string{"gt-nux"}},
 
 		// Invalid addresses - empty result
 		{"gastown/", nil},  // Empty target
@@ -122,43 +143,15 @@ func TestAddressToSessionIDs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.address, func(t *testing.T) {
-			got := addressToSessionIDs(tt.address)
+			got := AddressToSessionIDs(tt.address)
 			if len(got) != len(tt.want) {
-				t.Errorf("addressToSessionIDs(%q) = %v, want %v", tt.address, got, tt.want)
+				t.Errorf("AddressToSessionIDs(%q) = %v, want %v", tt.address, got, tt.want)
 				return
 			}
 			for i, v := range got {
 				if v != tt.want[i] {
-					t.Errorf("addressToSessionIDs(%q)[%d] = %q, want %q", tt.address, i, v, tt.want[i])
+					t.Errorf("AddressToSessionIDs(%q)[%d] = %q, want %q", tt.address, i, v, tt.want[i])
 				}
-			}
-		})
-	}
-}
-
-func TestAddressToSessionID(t *testing.T) {
-	// Deprecated wrapper - returns first candidate from addressToSessionIDs
-	tests := []struct {
-		address string
-		want    string
-	}{
-		{"overseer", "hq-overseer"},
-		{"mayor", "hq-mayor"},
-		{"mayor/", "hq-mayor"},
-		{"deacon", "hq-deacon"},
-		{"gastown/refinery", "gt-gastown-refinery"},
-		{"gastown/Toast", "gt-gastown-crew-Toast"}, // First candidate is crew
-		{"beads/witness", "gt-beads-witness"},
-		{"gastown/", ""},   // Empty target
-		{"gastown", ""},    // No slash
-		{"", ""},           // Empty address
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.address, func(t *testing.T) {
-			got := addressToSessionID(tt.address)
-			if got != tt.want {
-				t.Errorf("addressToSessionID(%q) = %q, want %q", tt.address, got, tt.want)
 			}
 		})
 	}
@@ -235,6 +228,31 @@ func TestShouldBeWisp(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "LIFECYCLE:Shutdown subject",
+			msg:  &Message{Subject: "LIFECYCLE:Shutdown capable"},
+			want: true,
+		},
+		{
+			name: "LIFECYCLE: polecat requesting shutdown",
+			msg:  &Message{Subject: "LIFECYCLE: polecat-nux requesting shutdown"},
+			want: true,
+		},
+		{
+			name: "MERGED subject",
+			msg:  &Message{Subject: "MERGED nux"},
+			want: true,
+		},
+		{
+			name: "MERGE_READY subject",
+			msg:  &Message{Subject: "MERGE_READY nux"},
+			want: true,
+		},
+		{
+			name: "MERGE_FAILED subject",
+			msg:  &Message{Subject: "MERGE_FAILED nux"},
+			want: true,
+		},
+		{
 			name: "handoff message (not auto-wisp)",
 			msg:  &Message{Subject: "HANDOFF: context notes"},
 			want: false,
@@ -254,7 +272,7 @@ func TestShouldBeWisp(t *testing.T) {
 func TestResolveBeadsDir(t *testing.T) {
 	// With town root set
 	r := NewRouterWithTownRoot("/work/dir", "/home/user/gt")
-	got := r.resolveBeadsDir("gastown/Toast")
+	got := r.resolveBeadsDir()
 	want := "/home/user/gt/.beads"
 	if filepath.ToSlash(got) != want {
 		t.Errorf("resolveBeadsDir with townRoot = %q, want %q", got, want)
@@ -262,10 +280,108 @@ func TestResolveBeadsDir(t *testing.T) {
 
 	// Without town root (fallback to workDir)
 	r2 := &Router{workDir: "/work/dir", townRoot: ""}
-	got2 := r2.resolveBeadsDir("mayor/")
+	got2 := r2.resolveBeadsDir()
 	want2 := "/work/dir/.beads"
 	if filepath.ToSlash(got2) != want2 {
 		t.Errorf("resolveBeadsDir without townRoot = %q, want %q", got2, want2)
+	}
+}
+
+func TestSendFromCrewWorkspace_AvoidsEphemeralPrefixMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a bash bd stub")
+	}
+
+	tmpDir := t.TempDir()
+	townRoot := filepath.Join(tmpDir, "town")
+	senderDir := filepath.Join(townRoot, "barnaby", "crew", "tom")
+	recipientDir := filepath.Join(townRoot, "barnaby", "crew", "troy")
+	mayorDir := filepath.Join(townRoot, "mayor")
+	townBeadsDir := filepath.Join(townRoot, ".beads")
+
+	for _, dir := range []string{senderDir, recipientDir, mayorDir, townBeadsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(townBeadsDir, "beads.db"), []byte{}, 0644); err != nil {
+		t.Fatalf("write beads.db: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(`{"name":"test"}`), 0644); err != nil {
+		t.Fatalf("write town.json: %v", err)
+	}
+
+	// Stub bd to reproduce the old behavior where --id msg-* with --ephemeral
+	// would fail prefix validation before ephemeral handling.
+	// The fix: sendToSingle no longer passes --id to bd create.
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	bdStub := filepath.Join(binDir, "bd")
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "config" || "${1:-}" == "init" ]]; then
+  exit 0
+fi
+
+if [[ "${1:-}" == "list" ]]; then
+  echo "[]"
+  exit 0
+fi
+
+if [[ "${1:-}" == "mol" && "${2:-}" == "wisp" && "${3:-}" == "list" ]]; then
+  echo "[]"
+  exit 0
+fi
+
+if [[ "${1:-}" == "create" ]]; then
+  has_ephemeral=false
+  msg_id=""
+  i=1
+  while [[ $i -le $# ]]; do
+    arg="${!i}"
+    if [[ "$arg" == "--ephemeral" ]]; then
+      has_ephemeral=true
+    elif [[ "$arg" == "--id" ]]; then
+      ((i++))
+      msg_id="${!i:-}"
+    elif [[ "$arg" == --id=* ]]; then
+      msg_id="${arg#--id=}"
+    fi
+    ((i++))
+  done
+
+  if [[ "$has_ephemeral" == "true" && "$msg_id" == msg-* ]]; then
+    echo "prefix mismatch: database uses 'hq-' (allowed: hq,hq-cv) but ID '$msg_id' doesn't match any allowed prefix" >&2
+    exit 1
+  fi
+
+  echo "hq-testmail-1"
+  exit 0
+fi
+
+echo "unsupported bd args: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(bdStub, []byte(script), 0755); err != nil {
+		t.Fatalf("write bd stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	r := NewRouter(senderDir)
+	msg := &Message{
+		From:           "barnaby/crew/tom",
+		To:             "barnaby/troy",
+		Subject:        "Test message",
+		Body:           "Hello",
+		Wisp:           true,
+		SuppressNotify: true,
+	}
+
+	if err := r.Send(msg); err != nil {
+		t.Fatalf("send from crew workspace should succeed without prefix mismatch: %v", err)
 	}
 }
 
@@ -813,6 +929,29 @@ func TestAgentBeadToAddress(t *testing.T) {
 			bead: &agentBead{ID: ""},
 			want: "",
 		},
+		{
+			name: "hq-dog with location in description",
+			bead: &agentBead{
+				ID:          "hq-dog-alpha",
+				Description: "Dog: alpha\n\nrole_type: dog\nrig: town\nlocation: deacon/dogs/alpha",
+			},
+			want: "deacon/dogs/alpha",
+		},
+		{
+			name: "hq-dog without description returns empty",
+			bead: &agentBead{
+				ID: "hq-dog-bravo",
+			},
+			want: "",
+		},
+		{
+			name: "hq-dog with location takes priority over role_type+rig",
+			bead: &agentBead{
+				ID:          "hq-dog-charlie",
+				Description: "Dog: charlie\n\nrole_type: dog\nrig: town\nlocation: deacon/dogs/charlie",
+			},
+			want: "deacon/dogs/charlie",
+		},
 	}
 
 	for _, tt := range tests {
@@ -820,6 +959,49 @@ func TestAgentBeadToAddress(t *testing.T) {
 			got := agentBeadToAddress(tt.bead)
 			if got != tt.want {
 				t.Errorf("agentBeadToAddress(%+v) = %q, want %q", tt.bead, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseAgentAddressFromDescription(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want string
+	}{
+		{
+			name: "location field returns address directly",
+			desc: "Dog: alpha\n\nrole_type: dog\nrig: town\nlocation: deacon/dogs/alpha",
+			want: "deacon/dogs/alpha",
+		},
+		{
+			name: "location null falls back to role_type+rig",
+			desc: "Some agent\n\nrole_type: witness\nrig: myrig\nlocation: null",
+			want: "myrig/witness",
+		},
+		{
+			name: "no location uses role_type+rig",
+			desc: "Some agent\n\nrole_type: polecat\nrig: gastown",
+			want: "gastown/polecat",
+		},
+		{
+			name: "town-level agent no rig",
+			desc: "Mayor\n\nrole_type: mayor\nrig: null",
+			want: "mayor/",
+		},
+		{
+			name: "empty description",
+			desc: "",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseAgentAddressFromDescription(tt.desc)
+			if got != tt.want {
+				t.Errorf("parseAgentAddressFromDescription(%q) = %q, want %q", tt.desc, got, tt.want)
 			}
 		})
 	}
@@ -926,6 +1108,11 @@ func TestValidateRecipient(t *testing.T) {
 		t.Skipf("bd CLI not functional, skipping test: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
 
+	// Start an ephemeral Dolt container to prevent bd init from creating
+	// databases on the production server (port 3307).
+	testutil.RequireDoltContainer(t)
+	doltPort, _ := strconv.Atoi(testutil.DoltContainerPort())
+
 	// Create isolated beads environment for testing
 	tmpDir := t.TempDir()
 	townRoot := tmpDir
@@ -936,46 +1123,54 @@ func TestValidateRecipient(t *testing.T) {
 		t.Fatalf("creating beads dir: %v", err)
 	}
 
-	// Initialize beads database with "gt" prefix (matches agent bead IDs)
-	cmd := exec.Command("bd", "init", "gt")
-	cmd.Dir = townRoot
-	cmd.Env = append(os.Environ(), "BEADS_DIR="+beadsDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bd init failed: %v\n%s", err, out)
+	// Use beads.NewIsolatedWithPort with a unique random prefix to avoid Dolt
+	// primary key collisions with production beads (e.g., gt-mayor).
+	// NewIsolatedWithPort directs bd init to the ephemeral server via
+	// --server-port and GT_DOLT_PORT, and uses --db flag for subsequent
+	// commands (bypassing Dolt). We set BEADS_DB so that the Router's
+	// external bd calls also use the same isolated SQLite database.
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	prefix := "vr" + hex.EncodeToString(buf[:])
+	b := beads.NewIsolatedWithPort(townRoot, doltPort)
+	if err := b.Init(prefix); err != nil {
+		t.Fatalf("bd init: %v", err)
 	}
 
-	// Set issue prefix to "gt" (matches agent bead ID pattern)
-	cmd = exec.Command("bd", "config", "set", "issue_prefix", "gt")
-	cmd.Dir = townRoot
-	cmd.Env = append(os.Environ(), "BEADS_DIR="+beadsDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bd config set issue_prefix failed: %v\n%s", err, out)
+	// Point BEADS_DB at the isolated SQLite file so the Router's
+	// runBdCommand (which inherits process env) uses it too.
+	beadsDB := filepath.Join(beadsDir, "beads.db")
+	t.Setenv("BEADS_DB", beadsDB)
+
+	// Register custom types required for agent beads.
+	if _, err := b.Run("config", "set", "types.custom", "agent,role,rig,convoy,slot,queue,event,message,molecule,gate,merge-request"); err != nil {
+		t.Fatalf("config set types.custom: %v", err)
 	}
 
-	// Register custom types (agent, message, etc.) - required before creating agents
-	cmd = exec.Command("bd", "config", "set", "types.custom", "agent,role,rig,convoy,slot,queue,event,message,molecule,gate,merge-request")
-	cmd.Dir = townRoot
-	cmd.Env = append(os.Environ(), "BEADS_DIR="+beadsDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bd config set types.custom failed: %v\n%s", err, out)
-	}
-
-	// Create test agent beads using gt:agent label
+	// Create test agent beads with gt:agent label.
+	// Safe to use "gt-" prefixed IDs since both NewIsolated (--db) and the
+	// Router (BEADS_DB env) point to the same local SQLite database.
 	createAgent := func(id, title string) {
-		cmd := exec.Command("bd", "create", title, "--labels=gt:agent", "--id="+id, "--force")
-		cmd.Dir = townRoot
-		cmd.Env = append(os.Environ(), "BEADS_DIR="+beadsDir)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("creating agent %s: %v\n%s", id, err, out)
+		if _, err := b.Run("create", title, "--labels=gt:agent", "--id="+id, "--force"); err != nil {
+			t.Fatalf("creating agent %s: %v", id, err)
 		}
 	}
 
-	// Create agents that match expected bead ID patterns
 	createAgent("gt-mayor", "Mayor agent")
 	createAgent("gt-deacon", "Deacon agent")
 	createAgent("gt-testrig-witness", "Test witness")
 	createAgent("gt-testrig-crew-alice", "Test crew alice")
 	createAgent("gt-testrig-polecat-bob", "Test polecat bob")
+
+	// Create dog directory for workspace fallback validation (deacon/dogs/fido).
+	// The workspace fallback handles cases where agent beads are missing or
+	// the bead DB is unavailable (e.g., after Dolt reset).
+	dogDir := filepath.Join(townRoot, "deacon", "dogs", "fido")
+	if err := os.MkdirAll(dogDir, 0755); err != nil {
+		t.Fatalf("creating dog dir: %v", err)
+	}
 
 	r := NewRouterWithTownRoot(townRoot, townRoot)
 
@@ -996,6 +1191,9 @@ func TestValidateRecipient(t *testing.T) {
 		{"witness", "testrig/witness", false, ""},
 		{"crew member", "testrig/alice", false, ""},
 		{"polecat", "testrig/bob", false, ""},
+
+		// Dog agents (validated via workspace fallback: deacon/dogs/<name> directory)
+		{"dog agent", "deacon/dogs/fido", false, ""},
 
 		// Invalid addresses - should fail
 		{"bare name", "ruby", true, "no agent found"},
@@ -1022,7 +1220,50 @@ func TestValidateRecipient(t *testing.T) {
 	}
 }
 
+func TestValidateAgentWorkspaceDog(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create dog directory structure: deacon/dogs/fido
+	dogDir := filepath.Join(tmpDir, "deacon", "dogs", "fido")
+	if err := os.MkdirAll(dogDir, 0755); err != nil {
+		t.Fatalf("creating dog dir: %v", err)
+	}
+
+	r := &Router{townRoot: tmpDir}
+
+	tests := []struct {
+		name     string
+		identity string
+		want     bool
+	}{
+		{"dog exists", "deacon/dogs/fido", true},
+		{"dog not exists", "deacon/dogs/ghost", false},
+		{"not a dog path", "deacon/cats/fido", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.validateAgentWorkspace(tt.identity)
+			if got != tt.want {
+				t.Errorf("validateAgentWorkspace(%q) = %v, want %v", tt.identity, got, tt.want)
+			}
+		})
+	}
+}
+
+func setupTestRegistryForAddressTest(t *testing.T) {
+	t.Helper()
+	reg := session.NewPrefixRegistry()
+	reg.Register("gt", "gastown")
+	reg.Register("bd", "beads")
+	old := session.DefaultRegistry()
+	session.SetDefaultRegistry(reg)
+	t.Cleanup(func() { session.SetDefaultRegistry(old) })
+}
+
 func TestAddressToAgentBeadID(t *testing.T) {
+	setupTestRegistryForAddressTest(t)
+
 	tests := []struct {
 		name     string
 		address  string
@@ -1051,22 +1292,27 @@ func TestAddressToAgentBeadID(t *testing.T) {
 		{
 			name:     "witness",
 			address:  "gastown/witness",
-			expected: "gt-gastown-witness",
+			expected: "gt-witness",
 		},
 		{
 			name:     "refinery",
 			address:  "gastown/refinery",
-			expected: "gt-gastown-refinery",
+			expected: "gt-refinery",
 		},
 		{
 			name:     "crew member",
 			address:  "gastown/crew/max",
-			expected: "gt-gastown-crew-max",
+			expected: "gt-crew-max",
 		},
 		{
 			name:     "polecat (default)",
 			address:  "gastown/alpha",
-			expected: "gt-gastown-polecat-alpha",
+			expected: "gt-alpha",
+		},
+		{
+			name:     "explicit polecat with polecats/ prefix",
+			address:  "gastown/polecats/alpha",
+			expected: "gt-alpha",
 		},
 		{
 			name:     "empty address",
@@ -1094,3 +1340,415 @@ func TestAddressToAgentBeadID(t *testing.T) {
 		})
 	}
 }
+
+// ============ Crew Shorthand Resolution Tests ============
+
+func TestResolveCrewShorthand(t *testing.T) {
+	// Create a realistic town directory structure
+	tmpDir := t.TempDir()
+
+	// Create pata rig with crew members
+	for _, name := range []string{"alice", "bob"} {
+		dir := filepath.Join(tmpDir, "pata", "crew", name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create pata polecat
+	if err := os.MkdirAll(filepath.Join(tmpDir, "pata", "polecats", "rust"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create another rig with crew
+	if err := os.MkdirAll(filepath.Join(tmpDir, "beads", "crew", "alice"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRouterWithTownRoot(tmpDir, tmpDir)
+
+	tests := []struct {
+		name     string
+		identity string
+		want     string
+	}{
+		// crew/name shorthand: unambiguous single rig match
+		{
+			name:     "crew/bob unambiguous",
+			identity: "crew/bob",
+			want:     "pata/bob", // bob only in pata
+		},
+		// crew/name shorthand: ambiguous (in multiple rigs) - leave unchanged
+		{
+			name:     "crew/alice ambiguous",
+			identity: "crew/alice",
+			want:     "crew/alice", // alice in both pata and beads
+		},
+		// Already fully-qualified rig/name - leave unchanged
+		{
+			name:     "pata/bob already canonical",
+			identity: "pata/bob",
+			want:     "pata/bob",
+		},
+		// polecats shorthand
+		{
+			name:     "polecats/rust shorthand",
+			identity: "polecats/rust",
+			want:     "pata/rust", // rust only in pata polecats
+		},
+		// Non-crew address - leave unchanged
+		{
+			name:     "mayor/ unchanged",
+			identity: "mayor/",
+			want:     "mayor/",
+		},
+		// No town root - no resolution attempted
+		{
+			name:     "no town root",
+			identity: "crew/bob",
+			want:     "crew/bob", // tested with empty townRoot below
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := r
+			if tt.name == "no town root" {
+				router = NewRouterWithTownRoot(tmpDir, "") // empty townRoot
+			}
+			got := router.resolveCrewShorthand(tt.identity)
+			if got != tt.want {
+				t.Errorf("resolveCrewShorthand(%q) = %q, want %q", tt.identity, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateRecipientFilesystemFallback(t *testing.T) {
+	// Create a realistic town directory structure without any agent beads
+	tmpDir := t.TempDir()
+
+	// Create pata rig structure
+	for _, subpath := range []string{
+		"pata/crew/bob",
+		"pata/crew/alice",
+		"pata/polecats/rust",
+		"pata/witness",
+		"pata/refinery",
+	} {
+		if err := os.MkdirAll(filepath.Join(tmpDir, subpath), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create mayor/town.json marker
+	if err := os.MkdirAll(filepath.Join(tmpDir, "mayor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "mayor", "town.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRouterWithTownRoot(tmpDir, tmpDir)
+
+	tests := []struct {
+		name     string
+		identity string
+		wantErr  bool
+	}{
+		// Crew members found via filesystem (no agent beads needed)
+		{"crew bob", "pata/bob", false},
+		{"crew alice", "pata/alice", false},
+		// Polecat found via filesystem
+		{"polecat rust", "pata/rust", false},
+		// Singleton roles found via filesystem
+		{"witness", "pata/witness", false},
+		{"refinery", "pata/refinery", false},
+		// Overseer always valid
+		{"overseer", "overseer", false},
+		// Non-existent agent should fail
+		{"nonexistent", "pata/nobody", true},
+		{"wrong rig", "notarig/bob", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := r.validateRecipient(tt.identity)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateRecipient(%q) expected error, got nil", tt.identity)
+			} else if !tt.wantErr && err != nil {
+				t.Errorf("validateRecipient(%q) unexpected error: %v", tt.identity, err)
+			}
+		})
+	}
+}
+
+// requireNotifyTestSocket returns a per-test tmux socket and skips if tmux
+// is unavailable. The socket server is killed on test cleanup.
+func requireNotifyTestSocket(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	// Use test name for unique socket per test to prevent cleanup interference.
+	// Sanitize: tmux socket names cannot contain slashes or dots.
+	safe := strings.NewReplacer("/", "-", ".", "-").Replace(t.Name())
+	socket := fmt.Sprintf("gt-test-%s-%d", safe, os.Getpid())
+	// Pre-kill any stale server on this socket (e.g., from a crashed prior run).
+	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+	})
+	return socket
+}
+
+// createNotifyTestSession creates a tmux session on the given socket and waits
+// for it to be ready.
+func createNotifyTestSession(t *testing.T, socket, sessionName, command string) {
+	t.Helper()
+	args := []string{"-L", socket, "new-session", "-d", "-s", sessionName, command}
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to create test session %q: %v\n%s", sessionName, err, out)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if exec.Command("tmux", "-L", socket, "has-session", "-t", sessionName).Run() == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("session %q never appeared on socket %q", sessionName, socket)
+}
+
+// TestNotifyRecipient_IdleAgent verifies that an idle agent (prompt visible)
+// receives a direct nudge instead of a queued one.
+func TestNotifyRecipient_IdleAgent(t *testing.T) {
+	socket := requireNotifyTestSocket(t)
+	sessionName := "gt-crew-idletest"
+
+	// Create a session that displays the Claude Code prompt prefix, simulating idle.
+	// "printf" prints the prompt, then "cat" blocks keeping the session alive.
+	createNotifyTestSession(t, socket, sessionName, `sh -c 'printf "❯ \n" && cat'`)
+
+	// Wait briefly for printf output to appear in the pane.
+	time.Sleep(500 * time.Millisecond)
+
+	townRoot := t.TempDir()
+	r := &Router{
+		workDir:           t.TempDir(),
+		townRoot:          townRoot,
+		tmux:              tmux.NewTmuxWithSocket(socket),
+		IdleNotifyTimeout: 3 * time.Second,
+	}
+
+	msg := &Message{
+		From:    "gastown/crew/sender",
+		To:      "gastown/crew/idletest",
+		Subject: "test idle delivery",
+	}
+
+	err := r.notifyRecipient(msg)
+	if err != nil {
+		t.Fatalf("notifyRecipient returned error: %v", err)
+	}
+
+	// The main notification was delivered directly (no immediate queue).
+	// But the reply-reminder is deferred — it should be in the queue with a
+	// future DeliverAfter, waiting for the configured delay to elapse.
+	pending, _ := nudge.Pending(townRoot, sessionName)
+	if pending != 1 {
+		t.Errorf("expected 1 queued nudge (deferred reply-reminder) for idle agent, got %d", pending)
+	}
+
+	// Confirm the queued nudge is deferred, not a missed immediate notification.
+	nudges, err := nudge.Drain(townRoot, sessionName)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 0 {
+		t.Errorf("expected 0 immediately-deliverable nudges (reminder should be deferred), got %d", len(nudges))
+	}
+}
+
+// TestNotifyRecipient_BusyAgent verifies that a busy agent (no prompt visible)
+// gets a queued nudge instead of an immediate one.
+func TestNotifyRecipient_BusyAgent(t *testing.T) {
+	socket := requireNotifyTestSocket(t)
+	sessionName := "gt-crew-busytest"
+
+	// Create a session running sleep — no prompt visible, simulating busy agent.
+	createNotifyTestSession(t, socket, sessionName, "sleep 300")
+
+	townRoot := t.TempDir()
+	r := &Router{
+		workDir:           t.TempDir(),
+		townRoot:          townRoot,
+		tmux:              tmux.NewTmuxWithSocket(socket),
+		IdleNotifyTimeout: 1 * time.Second, // short timeout for test speed
+	}
+
+	msg := &Message{
+		From:    "gastown/crew/sender",
+		To:      "gastown/crew/busytest",
+		Subject: "test busy delivery",
+	}
+
+	err := r.notifyRecipient(msg)
+	if err != nil {
+		t.Fatalf("notifyRecipient returned error: %v", err)
+	}
+
+	// Two nudges should be queued:
+	//   1. The immediate "you have mail" notification (deliverable now).
+	//   2. The deferred reply-reminder (not ready until configured delay elapses).
+	pending, _ := nudge.Pending(townRoot, sessionName)
+	if pending != 2 {
+		t.Errorf("expected 2 queued nudges (notification + reply-reminder) for busy agent, got %d", pending)
+	}
+
+	// Exactly 1 should be immediately deliverable (the main notification).
+	nudges, err := nudge.Drain(townRoot, sessionName)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 1 {
+		t.Errorf("expected 1 immediately-deliverable nudge, got %d", len(nudges))
+	}
+
+	// The reply-reminder should still be in queue (deferred).
+	remaining, _ := nudge.Pending(townRoot, sessionName)
+	if remaining != 1 {
+		t.Errorf("expected 1 deferred reply-reminder still in queue, got %d", remaining)
+	}
+}
+
+// --- enqueueReplyReminder tests ---
+
+// TestEnqueueReplyReminder_Basic verifies that a deferred reply-reminder nudge is
+// enqueued with the correct sender, message content, and DeliverAfter timestamp.
+func TestEnqueueReplyReminder_Basic(t *testing.T) {
+	townRoot := t.TempDir()
+	r := &Router{
+		workDir:  t.TempDir(),
+		townRoot: townRoot,
+	}
+	msg := &Message{
+		From:    "gastown/witness",
+		To:      "gastown/crew/alice",
+		Subject: "status check",
+		Type:    TypeNotification,
+	}
+	sessionID := "gt-gastown-crew-alice"
+
+	before := time.Now()
+	r.enqueueReplyReminder(msg, sessionID)
+	after := time.Now()
+
+	// Exactly one nudge should be queued.
+	pending, err := nudge.Pending(townRoot, sessionID)
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
+	if pending != 1 {
+		t.Fatalf("expected 1 queued reminder, got %d", pending)
+	}
+
+	// Nudge should not be immediately deliverable (DeliverAfter in future).
+	nudges, err := nudge.Drain(townRoot, sessionID)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 0 {
+		t.Errorf("reminder should be deferred, but Drain returned %d nudges", len(nudges))
+	}
+
+	// File still in queue — confirm DeliverAfter is ~30s ahead.
+	dir := filepath.Join(townRoot, ".runtime", "nudge_queue", sessionID)
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in queue dir, got %d", len(entries))
+	}
+
+	// Read the raw JSON to inspect DeliverAfter.
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var q nudge.QueuedNudge
+	if err := json.Unmarshal(data, &q); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if q.DeliverAfter.IsZero() {
+		t.Error("DeliverAfter should be set")
+	}
+	minDelay := before.Add(29 * time.Second)
+	maxDelay := after.Add(31 * time.Second)
+	if q.DeliverAfter.Before(minDelay) || q.DeliverAfter.After(maxDelay) {
+		t.Errorf("DeliverAfter = %v, want ~30s from [%v, %v]", q.DeliverAfter, before, after)
+	}
+	if !strings.Contains(q.Message, msg.From) {
+		t.Errorf("reminder message should mention sender %q, got %q", msg.From, q.Message)
+	}
+	if !strings.Contains(q.Message, "gt mail send") {
+		t.Errorf("reminder message should mention 'gt mail send', got %q", q.Message)
+	}
+}
+
+// TestEnqueueReplyReminder_SkipsReply verifies that reply-type messages do not
+// trigger a reply reminder (would be redundant noise).
+func TestEnqueueReplyReminder_SkipsReply(t *testing.T) {
+	townRoot := t.TempDir()
+	r := &Router{workDir: t.TempDir(), townRoot: townRoot}
+	msg := &Message{
+		From:    "gastown/witness",
+		To:      "gastown/crew/alice",
+		Subject: "re: status",
+		Type:    TypeReply,
+	}
+	r.enqueueReplyReminder(msg, "gt-gastown-crew-alice")
+
+	pending, _ := nudge.Pending(townRoot, "gt-gastown-crew-alice")
+	if pending != 0 {
+		t.Errorf("TypeReply should not enqueue a reminder, got %d", pending)
+	}
+}
+
+// TestEnqueueReplyReminder_NoTownRoot verifies that the function is a no-op
+// when no town root is set (nudge queue requires a town root).
+func TestEnqueueReplyReminder_NoTownRoot(t *testing.T) {
+	r := &Router{workDir: t.TempDir(), townRoot: ""}
+	msg := &Message{From: "mayor/", To: "gastown/crew/bob", Subject: "task"}
+	// Should not panic or error — just silently skip.
+	r.enqueueReplyReminder(msg, "gt-gastown-crew-bob")
+}
+
+// TestEnqueueReplyReminder_DisabledByConfig verifies that setting
+// reply_reminder_delay = "0s" suppresses all reply reminders.
+func TestEnqueueReplyReminder_DisabledByConfig(t *testing.T) {
+	townRoot := t.TempDir()
+
+	// Write a settings/config.json with reply_reminder_delay disabled.
+	// LoadOperationalConfig reads from {townRoot}/settings/config.json and
+	// expects the operational block nested under the "operational" key.
+	settingsDir := filepath.Join(townRoot, "settings")
+	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	configJSON := `{"operational":{"mail":{"reply_reminder_delay":"0s"}}}`
+	if err := os.WriteFile(filepath.Join(settingsDir, "config.json"), []byte(configJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Router{workDir: t.TempDir(), townRoot: townRoot}
+	msg := &Message{
+		From:    "mayor/",
+		To:      "gastown/crew/bob",
+		Subject: "task",
+		Type:    TypeTask,
+	}
+	r.enqueueReplyReminder(msg, "gt-gastown-crew-bob")
+
+	pending, _ := nudge.Pending(townRoot, "gt-gastown-crew-bob")
+	if pending != 0 {
+		t.Errorf("reply_reminder_delay=0s should disable reminders, got %d pending", pending)
+	}
+}
+

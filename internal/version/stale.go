@@ -19,6 +19,8 @@ var (
 // StaleBinaryInfo contains information about binary staleness.
 type StaleBinaryInfo struct {
 	IsStale       bool   // True if binary commit doesn't match repo HEAD
+	IsForward     bool   // True if repo HEAD is a descendant of binary commit (safe to rebuild)
+	OnMainBranch  bool   // True if the repo is on the main branch
 	BinaryCommit  string // Commit hash the binary was built from
 	RepoCommit    string // Current repo HEAD commit
 	CommitsBehind int    // Number of commits binary is behind (0 if unknown)
@@ -88,10 +90,25 @@ func CheckStaleBinary(repoDir string) *StaleBinaryInfo {
 	}
 	info.RepoCommit = strings.TrimSpace(string(output))
 
+	// Check which branch the repo is on
+	branchCmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
+	branchCmd.Dir = repoDir
+	if branchOutput, err := branchCmd.Output(); err == nil {
+		branch := strings.TrimSpace(string(branchOutput))
+		info.OnMainBranch = (branch == "main" || branch == "master")
+	}
+
 	// Compare commits using prefix matching (handles short vs full hash)
 	// Use the shorter of the two commit lengths for comparison
 	if !commitsMatch(info.BinaryCommit, info.RepoCommit) {
 		info.IsStale = true
+
+		// Check if this is a forward-only update (binary commit is ancestor of HEAD).
+		// This prevents rebuilding to an older or diverged commit, which caused
+		// a crash loop when a crew worktree's HEAD was behind the binary's commit.
+		ancestorCmd := exec.Command("git", "merge-base", "--is-ancestor", info.BinaryCommit, "HEAD")
+		ancestorCmd.Dir = repoDir
+		info.IsForward = ancestorCmd.Run() == nil
 
 		// Try to count commits between binary and HEAD
 		countCmd := exec.Command("git", "rev-list", "--count", info.BinaryCommit+"..HEAD")
@@ -107,13 +124,20 @@ func CheckStaleBinary(repoDir string) *StaleBinaryInfo {
 }
 
 // GetRepoRoot returns the git repository root for the gt source code.
-// The gt source lives in the gastown rig at $GT_ROOT/gastown/mayor/rig.
+// The canonical source is the gastown repo itself ($GT_ROOT/gastown).
+// Crew rigs also contain cmd/gt/main.go but have different HEADs,
+// so we prefer the gastown repo over CWD-based git toplevel detection.
 func GetRepoRoot() (string, error) {
 	// Check if GT_ROOT environment variable is set (agents always have this)
 	if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
-		rigPath := gtRoot + "/gastown/mayor/rig"
-		if hasGtSource(rigPath) {
-			return rigPath, nil
+		candidates := []string{
+			gtRoot + "/gastown",
+			gtRoot + "/gastown/mayor/rig",
+		}
+		for _, candidate := range candidates {
+			if hasGtSource(candidate) {
+				return candidate, nil
+			}
 		}
 	}
 
@@ -121,8 +145,11 @@ func GetRepoRoot() (string, error) {
 	home := os.Getenv("HOME")
 	if home != "" {
 		candidates := []string{
+			home + "/gt/gastown",
 			home + "/gt/gastown/mayor/rig",
+			home + "/gastown",
 			home + "/gastown/mayor/rig",
+			home + "/src/gastown",
 			home + "/src/gastown/mayor/rig",
 		}
 		for _, candidate := range candidates {
@@ -132,7 +159,7 @@ func GetRepoRoot() (string, error) {
 		}
 	}
 
-	// Check if current directory is in the gt source repo
+	// Fall back to current directory's git repo (may be a crew rig)
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	if output, err := cmd.Output(); err == nil {
 		root := strings.TrimSpace(string(output))

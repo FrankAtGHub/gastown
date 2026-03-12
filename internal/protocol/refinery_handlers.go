@@ -43,6 +43,10 @@ func (h *DefaultRefineryHandler) SetOutput(w io.Writer) {
 // HandleMergeReady handles a MERGE_READY message from Witness.
 // When a polecat's work is verified and ready, the Refinery acknowledges receipt.
 //
+// Belt-and-suspenders: if the message indicates this is from an owned+direct
+// convoy, the Refinery skips processing. These MRs shouldn't exist (gt done
+// skips MR creation for owned+direct), but this guards against edge cases.
+//
 // NOTE: The merge-request bead is created by `gt done`, so we no longer need
 // to add to the mrqueue here. The Refinery queries beads directly for ready MRs.
 func (h *DefaultRefineryHandler) HandleMergeReady(payload *MergeReadyPayload) error {
@@ -50,6 +54,13 @@ func (h *DefaultRefineryHandler) HandleMergeReady(payload *MergeReadyPayload) er
 	_, _ = fmt.Fprintf(h.Output, "  Branch: %s\n", payload.Branch)
 	_, _ = fmt.Fprintf(h.Output, "  Issue: %s\n", payload.Issue)
 	_, _ = fmt.Fprintf(h.Output, "  Verified: %s\n", payload.Verified)
+
+	// Belt-and-suspenders: check if this is from an owned+direct convoy.
+	// The Verified field may contain "owned+direct" marker from witness.
+	if payload.Verified == "owned+direct: skip merge" {
+		_, _ = fmt.Fprintf(h.Output, "[Refinery] ⚠ Owned+direct convoy — skipping merge (belt-and-suspenders)\n")
+		return nil
+	}
 
 	// The merge-request bead is created by `gt done` with gt:merge-request label.
 	// The Refinery queries beads directly via ReadyWithType("merge-request").
@@ -67,9 +78,18 @@ func (h *DefaultRefineryHandler) SendMerged(polecat, branch, issue, targetBranch
 }
 
 // SendMergeFailed sends a MERGE_FAILED message to the Witness.
+// LEGACY: Prefer SendFixNeeded which sends directly to the polecat.
 // Called by the Refinery when a merge fails.
 func (h *DefaultRefineryHandler) SendMergeFailed(polecat, branch, issue, targetBranch, failureType, errorMsg string) error {
 	msg := NewMergeFailedMessage(h.Rig, polecat, branch, issue, targetBranch, failureType, errorMsg)
+	return h.Router.Send(msg)
+}
+
+// SendFixNeeded sends a FIX_NEEDED message directly to the Polecat.
+// Called by the Refinery when a merge fails due to quality checks/tests.
+// The polecat fixes the code in-place and resubmits without losing context.
+func (h *DefaultRefineryHandler) SendFixNeeded(polecat, branch, issue, targetBranch, failureType, errorMsg, mrBeadID string, attemptNumber int) error {
+	msg := NewFixNeededMessage(h.Rig, polecat, branch, issue, targetBranch, failureType, errorMsg, mrBeadID, attemptNumber)
 	return h.Router.Send(msg)
 }
 
@@ -100,9 +120,17 @@ type MergeOutcome struct {
 
 	// ConflictFiles lists files with conflicts (if Conflict is true).
 	ConflictFiles []string
+
+	// MRBeadID is the merge-request bead ID (for FIX_NEEDED tracking).
+	MRBeadID string
+
+	// AttemptNumber tracks how many fix attempts have been made.
+	AttemptNumber int
 }
 
 // NotifyMergeOutcome sends the appropriate protocol message based on the outcome.
+// For failures (non-conflict), sends FIX_NEEDED directly to the polecat
+// so it can fix the code in-place without context loss.
 func (h *DefaultRefineryHandler) NotifyMergeOutcome(polecat, branch, issue, targetBranch string, outcome MergeOutcome) error {
 	if outcome.Success {
 		return h.SendMerged(polecat, branch, issue, targetBranch, outcome.MergeCommit)
@@ -112,7 +140,9 @@ func (h *DefaultRefineryHandler) NotifyMergeOutcome(polecat, branch, issue, targ
 		return h.SendReworkRequest(polecat, branch, issue, targetBranch, outcome.ConflictFiles)
 	}
 
-	return h.SendMergeFailed(polecat, branch, issue, targetBranch, outcome.FailureType, outcome.Error)
+	// Send FIX_NEEDED directly to polecat (event-driven lifecycle).
+	// The polecat stays alive and fixes in-place.
+	return h.SendFixNeeded(polecat, branch, issue, targetBranch, outcome.FailureType, outcome.Error, outcome.MRBeadID, outcome.AttemptNumber)
 }
 
 // Ensure DefaultRefineryHandler implements RefineryHandler.

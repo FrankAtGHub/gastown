@@ -4,6 +4,8 @@ package beads
 import (
 	"fmt"
 	"strings"
+
+	"github.com/steveyegge/gastown/internal/constants"
 )
 
 // TownBeadsPrefix is the prefix used for town-level agent beads stored in ~/gt/.beads/.
@@ -36,73 +38,31 @@ func DogBeadIDTown(name string) string {
 	return fmt.Sprintf("%s-dog-%s", TownBeadsPrefix, name)
 }
 
-// RoleBeadIDTown returns the role bead ID for town-level storage.
-// Role beads define lifecycle configuration for each agent type.
-// Uses "hq-" prefix for town-level storage: hq-<role>-role
-func RoleBeadIDTown(role string) string {
-	return fmt.Sprintf("%s-%s-role", TownBeadsPrefix, role)
-}
-
-// MayorRoleBeadIDTown returns the Mayor role bead ID for town-level storage.
-func MayorRoleBeadIDTown() string {
-	return RoleBeadIDTown("mayor")
-}
-
-// DeaconRoleBeadIDTown returns the Deacon role bead ID for town-level storage.
-func DeaconRoleBeadIDTown() string {
-	return RoleBeadIDTown("deacon")
-}
-
-// DogRoleBeadIDTown returns the Dog role bead ID for town-level storage.
-func DogRoleBeadIDTown() string {
-	return RoleBeadIDTown("dog")
-}
-
-// WitnessRoleBeadIDTown returns the Witness role bead ID for town-level storage.
-func WitnessRoleBeadIDTown() string {
-	return RoleBeadIDTown("witness")
-}
-
-// RefineryRoleBeadIDTown returns the Refinery role bead ID for town-level storage.
-func RefineryRoleBeadIDTown() string {
-	return RoleBeadIDTown("refinery")
-}
-
-// PolecatRoleBeadIDTown returns the Polecat role bead ID for town-level storage.
-func PolecatRoleBeadIDTown() string {
-	return RoleBeadIDTown("polecat")
-}
-
-// CrewRoleBeadIDTown returns the Crew role bead ID for town-level storage.
-func CrewRoleBeadIDTown() string {
-	return RoleBeadIDTown("crew")
-}
-
 // ===== Agent ID validation =====
 
 // ValidAgentRoles are the known agent role types for ID pattern validation.
 var ValidAgentRoles = []string{
-	"mayor",     // Town-level: gt-mayor
-	"deacon",    // Town-level: gt-deacon
-	"dog",       // Town-level with name: gt-dog-<name>
-	"witness",   // Per-rig: gt-<rig>-witness
-	"refinery",  // Per-rig: gt-<rig>-refinery
-	"architect", // Per-rig: gt-<rig>-architect
-	"crew",      // Per-rig with name: gt-<rig>-crew-<name>
-	"polecat",   // Per-rig with name: gt-<rig>-polecat-<name>
+	constants.RoleMayor,    // Town-level: gt-mayor
+	constants.RoleDeacon,   // Town-level: gt-deacon
+	"dog",                  // Town-level with name: gt-dog-<name>
+	constants.RoleWitness,  // Per-rig: gt-<rig>-witness
+	constants.RoleRefinery, // Per-rig: gt-<rig>-refinery
+	"architect",            // Per-rig: gt-<rig>-architect
+	constants.RoleCrew,    // Per-rig with name: gt-<rig>-crew-<name>
+	constants.RolePolecat, // Per-rig with name: gt-<rig>-polecat-<name>
 }
 
 // TownLevelRoles are agent roles that don't have a rig.
-var TownLevelRoles = []string{"mayor", "deacon"}
+var TownLevelRoles = []string{constants.RoleMayor, constants.RoleDeacon}
 
 // TownLevelNamedRoles are town-level agent roles that include a name.
 var TownLevelNamedRoles = []string{"dog"}
 
 // RigLevelRoles are agent roles that have a rig but no name.
-var RigLevelRoles = []string{"witness", "refinery", "architect"}
+var RigLevelRoles = []string{constants.RoleWitness, constants.RoleRefinery, "architect"}
 
 // NamedRoles are agent roles that include a worker name (rig-level).
-var NamedRoles = []string{"crew", "polecat"}
+var NamedRoles = []string{constants.RoleCrew, constants.RolePolecat}
 
 // isValidRole checks if a string is a valid agent role.
 func isValidRole(s string) bool {
@@ -200,7 +160,8 @@ func ValidateAgentID(id string) error {
 		return fmt.Errorf("agent ID must include content after prefix (got %q)", id)
 	}
 
-	// Case 1: Single part after prefix - must be town-level role
+	// Case 1: Single part after prefix - town-level role or collapsed rig-level
+	// (collapsed form: when prefix == rig, e.g., "ff-witness" for rig "ff")
 	if len(parts) == 1 {
 		role := parts[0]
 		if isTownLevelRole(role) {
@@ -209,17 +170,25 @@ func ValidateAgentID(id string) error {
 		if isTownLevelNamedRole(role) {
 			return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
 		}
-		if isValidRole(role) {
-			return fmt.Errorf("agent role %q requires rig: <prefix>-<rig>-%s (got %q)", role, role, id)
+		if isRigLevelRole(role) {
+			return nil // Valid collapsed rig-level singleton (prefix == rig)
+		}
+		if isNamedRole(role) {
+			return fmt.Errorf("agent role %q requires name: <prefix>-%s-<name> (got %q)", role, role, id)
 		}
 		return fmt.Errorf("invalid agent role %q (valid: %s)", role, strings.Join(ValidAgentRoles, ", "))
 	}
 
-	// Case 2: Two parts - could be town-level named (dog-alpha) or needs to scan for role
+	// Case 2: Two parts - could be town-level named (dog-alpha), rig-level singleton
+	// (gastown-witness), or collapsed named agent (polecat-nux when prefix == rig)
 	if len(parts) == 2 {
 		// Check if first part is a town-level named role
 		if isTownLevelNamedRole(parts[0]) {
 			return nil // Valid town-level named agent: gt-dog-alpha
+		}
+		// Check if first part is a named role (collapsed form: prefix-role-name)
+		if isNamedRole(parts[0]) {
+			return nil // Valid collapsed named agent: ff-polecat-nux (prefix == rig)
 		}
 		// Check if second part is a rig-level singleton role
 		if isRigLevelRole(parts[1]) {
@@ -325,10 +294,17 @@ func ValidateAgentID(id string) error {
 // For town-level agents (mayor, deacon), pass empty rig and name.
 // For rig-level singletons (witness, refinery), pass empty name.
 // For named agents (crew, polecat), pass all three.
+//
+// When prefix == rig (e.g., rig "ff" with derived prefix "ff"), the rig component
+// is omitted to avoid stuttered IDs like "ff-ff-witness". Instead produces "ff-witness".
 func AgentBeadIDWithPrefix(prefix, rig, role, name string) string {
-	if rig == "" {
-		// Town-level agent: prefix-mayor, prefix-deacon
-		return prefix + "-" + role
+	if rig == "" || rig == prefix {
+		// Town-level agent (rig=="") or collapsed form (rig==prefix):
+		//   prefix-role or prefix-role-name
+		if name == "" {
+			return prefix + "-" + role
+		}
+		return prefix + "-" + role + "-" + name
 	}
 	if name == "" {
 		// Rig-level singleton: prefix-rig-witness, prefix-rig-refinery
@@ -344,35 +320,9 @@ func AgentBeadID(rig, role, name string) string {
 	return AgentBeadIDWithPrefix("gt", rig, role, name)
 }
 
-// MayorBeadID returns the Mayor agent bead ID.
-//
-// Deprecated: Use MayorBeadIDTown() for town-level beads (hq- prefix).
-// This function returns "gt-mayor" which is for rig-level storage.
-// Town-level agents like Mayor should use the hq- prefix.
-func MayorBeadID() string {
-	return "gt-mayor"
-}
-
-// DeaconBeadID returns the Deacon agent bead ID.
-//
-// Deprecated: Use DeaconBeadIDTown() for town-level beads (hq- prefix).
-// This function returns "gt-deacon" which is for rig-level storage.
-// Town-level agents like Deacon should use the hq- prefix.
-func DeaconBeadID() string {
-	return "gt-deacon"
-}
-
-// DogBeadID returns a Dog agent bead ID.
-// Dogs are town-level agents, so they follow the pattern: gt-dog-<name>
-// Deprecated: Use DogBeadIDTown() for town-level beads with hq- prefix.
-// Dogs are town-level agents and should use hq-dog-<name>, not gt-dog-<name>.
-func DogBeadID(name string) string {
-	return "gt-dog-" + name
-}
-
 // WitnessBeadIDWithPrefix returns the Witness agent bead ID for a rig using the specified prefix.
 func WitnessBeadIDWithPrefix(prefix, rig string) string {
-	return AgentBeadIDWithPrefix(prefix, rig, "witness", "")
+	return AgentBeadIDWithPrefix(prefix, rig, constants.RoleWitness, "")
 }
 
 // WitnessBeadID returns the Witness agent bead ID for a rig using "gt" prefix.
@@ -382,7 +332,7 @@ func WitnessBeadID(rig string) string {
 
 // RefineryBeadIDWithPrefix returns the Refinery agent bead ID for a rig using the specified prefix.
 func RefineryBeadIDWithPrefix(prefix, rig string) string {
-	return AgentBeadIDWithPrefix(prefix, rig, "refinery", "")
+	return AgentBeadIDWithPrefix(prefix, rig, constants.RoleRefinery, "")
 }
 
 // RefineryBeadID returns the Refinery agent bead ID for a rig using "gt" prefix.
@@ -392,7 +342,7 @@ func RefineryBeadID(rig string) string {
 
 // CrewBeadIDWithPrefix returns a Crew worker agent bead ID using the specified prefix.
 func CrewBeadIDWithPrefix(prefix, rig, name string) string {
-	return AgentBeadIDWithPrefix(prefix, rig, "crew", name)
+	return AgentBeadIDWithPrefix(prefix, rig, constants.RoleCrew, name)
 }
 
 // CrewBeadID returns a Crew worker agent bead ID using "gt" prefix.
@@ -402,7 +352,7 @@ func CrewBeadID(rig, name string) string {
 
 // PolecatBeadIDWithPrefix returns a Polecat agent bead ID using the specified prefix.
 func PolecatBeadIDWithPrefix(prefix, rig, name string) string {
-	return AgentBeadIDWithPrefix(prefix, rig, "polecat", name)
+	return AgentBeadIDWithPrefix(prefix, rig, constants.RolePolecat, name)
 }
 
 // PolecatBeadID returns a Polecat agent bead ID using "gt" prefix.
@@ -415,6 +365,11 @@ func PolecatBeadID(rig, name string) string {
 // For town-level agents, rig will be empty.
 // For singletons, name will be empty.
 // Accepts any valid prefix (e.g., "gt-", "bd-"), not just "gt-".
+//
+// Handles the collapsed form where prefix == rig (e.g., "ff-witness" for rig "ff").
+// In collapsed form, the prefix is returned as the rig:
+//   - "ff-witness"     → rig="ff", role="witness", name=""
+//   - "ff-polecat-nux" → rig="ff", role="polecat", name="nux"
 func ParseAgentBeadID(id string) (rig, role, name string, ok bool) {
 	// Find the prefix (everything before the first hyphen)
 	// Valid prefixes are 2-3 characters (e.g., "gt", "bd", "hq")
@@ -423,6 +378,7 @@ func ParseAgentBeadID(id string) (rig, role, name string, ok bool) {
 		return "", "", "", false
 	}
 
+	prefix := id[:hyphenIdx]
 	rest := id[hyphenIdx+1:]
 	parts := strings.Split(rest, "-")
 
@@ -430,14 +386,29 @@ func ParseAgentBeadID(id string) (rig, role, name string, ok bool) {
 		return "", "", "", false
 	}
 
-	// Single part: town-level role (gt-mayor, bd-deacon) or unknown
+	// Single part: town-level role (gt-mayor) or collapsed rig-level (ff-witness)
 	if len(parts) == 1 {
-		return "", parts[0], "", true
+		r := parts[0]
+		if isTownLevelRole(r) {
+			return "", r, "", true
+		}
+		// Collapsed rig-level singleton: prefix is the rig (e.g., ff-witness)
+		if isRigLevelRole(r) {
+			return prefix, r, "", true
+		}
+		// Unknown single-part — return as-is for backward compat
+		return "", r, "", true
 	}
 
 	// Check for town-level named roles (dog) first
 	if parts[0] == "dog" {
 		return "", "dog", strings.Join(parts[1:], "-"), true
+	}
+
+	// Check for collapsed named agent: prefix-role-name (e.g., ff-polecat-nux)
+	// This happens when prefix == rig, so the rig component was omitted.
+	if isNamedRole(parts[0]) {
+		return prefix, parts[0], strings.Join(parts[1:], "-"), true
 	}
 
 	// Scan from right for known role markers to handle hyphenated rig names.
@@ -494,7 +465,7 @@ func IsAgentSessionBead(beadID string) bool {
 	}
 	// Known agent roles
 	switch role {
-	case "mayor", "deacon", "witness", "refinery", "crew", "polecat", "dog":
+	case constants.RoleMayor, constants.RoleDeacon, constants.RoleWitness, constants.RoleRefinery, constants.RoleCrew, constants.RolePolecat, "dog":
 		return true
 	default:
 		return false

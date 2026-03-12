@@ -34,10 +34,11 @@ var defaultTTLs = map[string]time.Duration{
 
 // compactResult tracks what happened to each wisp during compaction.
 type compactResult struct {
-	Promoted []compactAction `json:"promoted"`
-	Deleted  []compactAction `json:"deleted"`
-	Skipped  int             `json:"skipped"` // wisps still within TTL
-	Errors   []string        `json:"errors,omitempty"`
+	Promoted         []compactAction `json:"promoted"`
+	Deleted          []compactAction `json:"deleted"`
+	Skipped          int             `json:"skipped"`            // wisps still within TTL
+	OrphanedWispDeps int             `json:"orphaned_wisp_deps"` // stale wisp_dependencies removed
+	Errors           []string        `json:"errors,omitempty"`
 }
 
 type compactAction struct {
@@ -55,7 +56,7 @@ var compactCmd = &cobra.Command{
 
 For non-closed wisps past TTL: promotes to permanent beads (something is stuck).
 For closed wisps past TTL: deletes them (Dolt AS OF preserves history).
-Wisps with comments, references, or keep labels are always promoted.
+Wisps with comments or keep labels are always promoted.
 
 TTLs by wisp type:
   heartbeat, ping:              6h
@@ -82,18 +83,13 @@ func init() {
 
 // loadTTLConfig loads TTL configuration with layered precedence:
 //
-//	role bead > rig config (wisp layer + bead labels) > hardcoded defaults
-//
-// The roleName parameter enables role bead overrides (e.g., "deacon", "witness").
-// Pass empty string to skip the role bead layer.
+//	rig config (wisp layer + bead labels) > hardcoded defaults
 func loadTTLConfig(townRoot, rigName string) map[string]time.Duration {
-	roleName := os.Getenv("GT_ROLE")
-	return loadTTLConfigWithRole(townRoot, rigName, roleName)
+	return loadTTLConfigWithRole(townRoot, rigName)
 }
 
-// loadTTLConfigWithRole is the testable version of loadTTLConfig that accepts
-// an explicit role name parameter instead of reading from environment.
-func loadTTLConfigWithRole(townRoot, rigName, roleName string) map[string]time.Duration {
+// loadTTLConfigWithRole is the testable version of loadTTLConfig.
+func loadTTLConfigWithRole(townRoot, rigName string) map[string]time.Duration {
 	// Layer 1: Hardcoded defaults (lowest precedence)
 	ttls := make(map[string]time.Duration)
 	for k, v := range defaultTTLs {
@@ -125,11 +121,6 @@ func loadTTLConfigWithRole(townRoot, rigName, roleName string) map[string]time.D
 		applyRigBeadTTLOverrides(ttls, townRoot, rigName)
 	}
 
-	// Layer 3: Role bead description (highest precedence)
-	if roleName != "" {
-		applyRoleBeadTTLOverrides(ttls, townRoot, roleName)
-	}
-
 	return ttls
 }
 
@@ -157,25 +148,6 @@ func applyRigBeadTTLOverrides(ttls map[string]time.Duration, townRoot, rigName s
 			if dur, err := time.ParseDuration(value); err == nil {
 				ttls[wispType] = dur
 			}
-		}
-	}
-}
-
-// applyRoleBeadTTLOverrides reads wisp_ttl_* fields from the role bead description
-// and applies them as overrides (highest precedence).
-func applyRoleBeadTTLOverrides(ttls map[string]time.Duration, townRoot, roleName string) {
-	beadsDir := beads.ResolveBeadsDir(townRoot)
-	bd := beads.NewWithBeadsDir(townRoot, beadsDir)
-
-	roleBeadID := beads.RoleBeadIDTown(roleName)
-	roleConfig, err := bd.GetRoleConfig(roleBeadID)
-	if err != nil || roleConfig == nil {
-		return
-	}
-
-	for wispType, ttlStr := range roleConfig.WispTTLs {
-		if dur, err := time.ParseDuration(ttlStr); err == nil {
-			ttls[wispType] = dur
 		}
 	}
 }
@@ -238,18 +210,28 @@ func runCompact(cmd *cobra.Command, args []string) error {
 		}
 
 		ttl := getTTL(ttls, w.WispType)
-		shouldPromote := hasComments(w) || isReferenced(w) || hasKeepLabel(w)
+		shouldPromote := hasComments(w) || hasKeepLabel(w)
+
+		// Molecule step wisps (those with a Parent) should never be promoted.
+		// They are subordinate steps of a molecule and should be deleted when
+		// past TTL, not elevated to permanent beads. This prevents patrol
+		// molecule steps from polluting the issues table.
+		isMoleculeStep := w.Parent != ""
 
 		if w.Status != "closed" {
 			// Non-closed wisps
-			if shouldPromote {
+			if shouldPromote && !isMoleculeStep {
 				promoteWisp(bd, w, "proven value", result)
 			} else if age > ttl {
-				reason := "open past TTL"
-				if w.Status == "in_progress" {
-					reason = "stuck in_progress past TTL"
+				if isMoleculeStep {
+					deleteWisp(bd, w, "molecule step past TTL", result)
+				} else {
+					reason := "open past TTL"
+					if w.Status == "in_progress" {
+						reason = "stuck in_progress past TTL"
+					}
+					promoteWisp(bd, w, reason, result)
 				}
-				promoteWisp(bd, w, reason, result)
 			} else {
 				result.Skipped++
 				if compactVerbose && !compactJSON {
@@ -259,7 +241,7 @@ func runCompact(cmd *cobra.Command, args []string) error {
 			}
 		} else {
 			// Closed wisps
-			if shouldPromote {
+			if shouldPromote && !isMoleculeStep {
 				promoteWisp(bd, w, "proven value", result)
 			} else if age > ttl {
 				deleteWisp(bd, w, "TTL expired", result)
@@ -273,6 +255,14 @@ func runCompact(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Clean up orphaned wisp_dependencies left behind by deleted wisps.
+	// When bd delete removes a wisp, it doesn't cascade-delete dependency
+	// records in wisp_dependencies that reference the deleted wisp. Over many
+	// compaction cycles these accumulate as dangling refs. We sweep them here.
+	if !compactDryRun {
+		cleanOrphanedWispDeps(bd, result)
+	}
+
 	// Output results
 	if compactJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -282,6 +272,27 @@ func runCompact(cmd *cobra.Command, args []string) error {
 
 	printCompactSummary(result)
 	return nil
+}
+
+// cleanOrphanedWispDeps removes wisp_dependencies rows where either side no
+// longer exists in the wisps table. This happens when bd delete removes a wisp
+// but leaves behind its dependency records (bd delete has no cascade logic for
+// the wisp-level tables). Runs as a post-compact sweep.
+func cleanOrphanedWispDeps(bd *beads.Beads, result *compactResult) {
+	const q = `DELETE FROM wisp_dependencies WHERE ` +
+		`NOT EXISTS (SELECT 1 FROM wisps WHERE id = wisp_dependencies.issue_id) ` +
+		`OR NOT EXISTS (SELECT 1 FROM wisps WHERE id = wisp_dependencies.depends_on_id)`
+	out, err := bd.Run("sql", q)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("orphaned wisp_deps cleanup: %v", err))
+		return
+	}
+	// bd sql reports "OK, N rows affected" for non-SELECT statements.
+	// Parse the count if present; a non-zero result means refs were cleaned.
+	var n int
+	if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "OK, %d rows affected", &n); scanErr == nil {
+		result.OrphanedWispDeps = n
+	}
 }
 
 // listWisps queries all ephemeral issues from the database.
@@ -383,6 +394,9 @@ func printCompactSummary(result *compactResult) {
 	fmt.Printf("  Promoted: %d\n", promoted)
 	fmt.Printf("  Deleted:  %d\n", deleted)
 	fmt.Printf("  Skipped:  %d (within TTL)\n", result.Skipped)
+	if result.OrphanedWispDeps > 0 {
+		fmt.Printf("  Cleaned:  %d orphaned wisp dependency ref(s)\n", result.OrphanedWispDeps)
+	}
 
 	if len(result.Errors) > 0 {
 		fmt.Printf("\n%s %d errors:\n", style.Warning.Render("⚠"), len(result.Errors))

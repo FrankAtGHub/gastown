@@ -69,7 +69,7 @@ func runMailThread(cmd *cobra.Command, args []string) error {
 			style.Dim.Render(msg.ID),
 			msg.From, msg.To)
 		fmt.Printf("    %s\n",
-			style.Dim.Render(msg.Timestamp.Format("2006-01-02 15:04")))
+			style.Dim.Render(msg.Timestamp.Local().Format("2006-01-02 15:04")))
 
 		if msg.Body != "" {
 			fmt.Printf("    %s\n", msg.Body)
@@ -141,7 +141,8 @@ func runMailReply(cmd *cobra.Command, args []string) error {
 		reply.ThreadID = generateThreadID()
 	}
 
-	// Send the reply
+	// Send the reply (defer drains async notification goroutines before CLI exits)
+	defer router.WaitPendingNotifications()
 	if err := router.Send(reply); err != nil {
 		return fmt.Errorf("sending reply: %w", err)
 	}

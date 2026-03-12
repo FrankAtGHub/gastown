@@ -14,6 +14,8 @@ import (
 )
 
 // Default parameters for re-dispatch rate-limiting.
+// Configurable via operational.deacon.max_redispatches and
+// operational.deacon.redispatch_cooldown in settings/config.json.
 const (
 	// DefaultMaxRedispatches is the number of times a bead can be re-dispatched
 	// before escalating to Mayor instead of re-slinging.
@@ -249,11 +251,18 @@ func Redispatch(townRoot, beadID, sourceRig string, maxAttempts int, cooldown ti
 	}
 	result.TargetRig = targetRig
 
-	// Verify bead is still open (not already claimed)
+	// Verify bead is still open (not already claimed or closed).
+	// Only proceed when status is explicitly "open". Empty status (query
+	// failure) is treated as "not open" to avoid re-dispatching closed
+	// beads when bd show fails. (gt-sy8)
 	beadStatus := getBeadStatusForRedispatch(townRoot, beadID)
-	if beadStatus != "open" && beadStatus != "" {
+	if beadStatus != "open" {
 		result.Action = "skipped"
-		result.Message = fmt.Sprintf("bead status is %q (expected open)", beadStatus)
+		if beadStatus == "" {
+			result.Message = "could not determine bead status (treating as not open)"
+		} else {
+			result.Message = fmt.Sprintf("bead status is %q (expected open)", beadStatus)
+		}
 		return result
 	}
 

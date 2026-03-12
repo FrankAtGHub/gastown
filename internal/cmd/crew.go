@@ -22,6 +22,8 @@ var (
 	crewListAll       bool
 	crewDryRun        bool
 	crewDebug         bool
+	crewReset         bool
+	crewResume        string
 )
 
 var crewCmd = &cobra.Command{
@@ -77,15 +79,17 @@ Examples:
 }
 
 var crewListCmd = &cobra.Command{
-	Use:   "list",
+	Use:   "list [rig]",
 	Short: "List crew workspaces with status",
+	Args:  cobra.MaximumNArgs(1),
 	Long: `List all crew workspaces in a rig with their status.
 
 Shows git branch, session state, and git status for each workspace.
 
 Examples:
   gt crew list                    # List in current rig
-  gt crew list --rig greenplace   # List in specific rig
+  gt crew list greenplace         # List in specific rig (positional)
+  gt crew list --rig greenplace   # List in specific rig (flag)
   gt crew list --all              # List in all rigs
   gt crew list --json             # JSON output`,
 	RunE: runCrewList,
@@ -106,14 +110,26 @@ current pane. Use C-b s to switch to the new session.
 When run from outside tmux, you are attached to the session (unless
 --detached is specified).
 
-Role Discovery:
+Branch Handling:
+  By default, the workspace stays on its current branch (a warning is
+  shown if not on the default branch). Use --reset to switch to the
+  default branch and pull latest changes.
+
+Rig Discovery:
+  The rig is resolved in order: --rig flag, rig/name format, current
+  directory, or by scanning all rigs for the crew member name. This
+  means "gt crew at dave" works from anywhere in the town if dave
+  exists in exactly one rig.
+
   If no name is provided, attempts to detect the crew workspace from the
   current directory. If you're in <rig>/crew/<name>/, it will attach to
   that workspace automatically.
 
 Examples:
-  gt crew at dave                 # Attach to dave's session
+  gt crew at dave                 # Attach to dave's session (rig auto-detected)
   gt crew at                      # Auto-detect from cwd
+  gt crew at gastown/dave         # Explicit rig/name format
+  gt crew at dave --reset         # Reset to default branch first
   gt crew at dave --detached      # Start session without attaching
   gt crew at dave --no-tmux       # Just print path`,
 	Args: cobra.MaximumNArgs(1),
@@ -280,11 +296,18 @@ current directory. If no crew names are specified, starts all crew in the rig.
 
 The crew session starts in the background with Claude running and ready.
 
+Use --resume to resume a previous session instead of starting fresh. This
+passes the agent's resume flag (e.g., Claude's --resume) so the session
+picks up where it left off, with proper Gas Town metadata set so GC doesn't
+kill the session.
+
 Examples:
   gt crew start beads             # Start all crew in beads rig
   gt crew start                   # Start all crew (rig inferred from cwd)
   gt crew start beads grip fang   # Start specific crew in beads rig
-  gt crew start gastown joe       # Start joe in gastown rig`,
+  gt crew start gastown joe       # Start joe in gastown rig
+  gt crew start beads ace --resume          # Resume ace's most recent session
+  gt crew start beads ace --resume abc123   # Resume specific session ID`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// With --all, we can have 0 args (infer rig) or 1+ args (rig specified)
 		if crewAll {
@@ -349,6 +372,7 @@ func init() {
 	crewAtCmd.Flags().StringVar(&crewAccount, "account", "", "Claude Code account handle to use (overrides default)")
 	crewAtCmd.Flags().StringVar(&crewAgentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
 	crewAtCmd.Flags().BoolVar(&crewDebug, "debug", false, "Show debug output for troubleshooting")
+	crewAtCmd.Flags().BoolVar(&crewReset, "reset", false, "Reset workspace to default branch (checkout and pull)")
 
 	crewRemoveCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use")
 	crewRemoveCmd.Flags().BoolVar(&crewForce, "force", false, "Force remove (skip safety checks)")
@@ -369,9 +393,12 @@ func init() {
 	crewRestartCmd.Flags().BoolVar(&crewAll, "all", false, "Restart all running crew sessions")
 	crewRestartCmd.Flags().BoolVar(&crewDryRun, "dry-run", false, "Show what would be restarted without restarting")
 
+	crewStartCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to start crew in (alternative to positional rig arg)")
 	crewStartCmd.Flags().BoolVar(&crewAll, "all", false, "Start all crew members in the rig")
 	crewStartCmd.Flags().StringVar(&crewAccount, "account", "", "Claude Code account handle to use")
 	crewStartCmd.Flags().StringVar(&crewAgentOverride, "agent", "", "Agent alias to run crew worker with (overrides rig/town default)")
+	crewStartCmd.Flags().StringVar(&crewResume, "resume", "", "Resume a previous session (optionally specify session ID)")
+	crewStartCmd.Flags().Lookup("resume").NoOptDefVal = "last"
 
 	crewStopCmd.Flags().StringVar(&crewRig, "rig", "", "Rig to use (filter when using --all)")
 	crewStopCmd.Flags().BoolVar(&crewAll, "all", false, "Stop all running crew sessions")

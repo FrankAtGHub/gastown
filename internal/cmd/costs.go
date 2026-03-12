@@ -40,8 +40,6 @@ var (
 	digestDate      string
 	digestDryRun    bool
 
-	// Migrate subcommand flags
-	migrateDryRun bool
 )
 
 var costsCmd = &cobra.Command{
@@ -97,35 +95,14 @@ This command is intended to be run by Deacon patrol (daily) or manually.
 It reads entries from ~/.gt/costs.jsonl for a target date, creates a single
 aggregate "Cost Report YYYY-MM-DD" bead, then removes the source entries.
 
-The resulting digest bead is permanent (exported to JSONL, synced via git)
-and provides an audit trail without log-in-database pollution.
+The resulting digest bead is permanent (synced via git) and provides
+an audit trail without log-in-database pollution.
 
 Examples:
   gt costs digest --yesterday   # Digest yesterday's costs (default for patrol)
   gt costs digest --date 2026-01-07  # Digest a specific date
   gt costs digest --yesterday --dry-run  # Preview without changes`,
 	RunE: runCostsDigest,
-}
-
-var costsMigrateCmd = &cobra.Command{
-	Use:   "migrate",
-	Short: "Migrate legacy session.ended beads to the new log-file architecture",
-	Long: `Migrate legacy session.ended event beads to the new cost tracking system.
-
-This command handles the transition from the old architecture (where each
-session.ended event was a permanent bead) to the new log-file-based system.
-
-The migration:
-1. Finds all open session.ended event beads (should be none if auto-close worked)
-2. Closes them with reason "migrated to log-file architecture"
-
-Legacy beads remain in the database for historical queries but won't interfere
-with the new log-file-based cost tracking.
-
-Examples:
-  gt costs migrate            # Migrate legacy beads
-  gt costs migrate --dry-run  # Preview what would be migrated`,
-	RunE: runCostsMigrate,
 }
 
 func init() {
@@ -148,9 +125,6 @@ func init() {
 	costsDigestCmd.Flags().StringVar(&digestDate, "date", "", "Digest a specific date (YYYY-MM-DD)")
 	costsDigestCmd.Flags().BoolVar(&digestDryRun, "dry-run", false, "Preview what would be done without making changes")
 
-	// Add migrate subcommand
-	costsCmd.AddCommand(costsMigrateCmd)
-	costsMigrateCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "Preview what would be migrated without making changes")
 }
 
 // SessionCost represents cost info for a single session.
@@ -259,20 +233,20 @@ func runLiveCosts() error {
 	var costs []SessionCost
 	var total float64
 
-	for _, session := range sessions {
-		// Only process Gas Town sessions (start with "gt-")
-		if !strings.HasPrefix(session, constants.SessionPrefix) {
+	for _, sess := range sessions {
+		// Only process Gas Town sessions
+		if !session.IsKnownSession(sess) {
 			continue
 		}
 
 		// Parse session name to get role/rig/worker
-		role, rig, worker := parseSessionName(session)
+		role, rig, worker := parseSessionName(sess)
 
 		// Get working directory of the session
-		workDir, err := getTmuxSessionWorkDir(session)
+		workDir, err := getTmuxSessionWorkDir(sess)
 		if err != nil {
 			if costsVerbose {
-				fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", session, err)
+				fmt.Fprintf(os.Stderr, "[costs] could not get workdir for %s: %v\n", sess, err)
 			}
 			continue
 		}
@@ -281,17 +255,17 @@ func runLiveCosts() error {
 		cost, err := extractCostFromWorkDir(workDir)
 		if err != nil {
 			if costsVerbose {
-				fmt.Fprintf(os.Stderr, "[costs] could not extract cost for %s: %v\n", session, err)
+				fmt.Fprintf(os.Stderr, "[costs] could not extract cost for %s: %v\n", sess, err)
 			}
 			// Still include the session with zero cost
 			cost = 0.0
 		}
 
 		// Check if an agent appears to be running
-		running := t.IsAgentRunning(session)
+		running := t.IsAgentRunning(sess)
 
 		costs = append(costs, SessionCost{
-			Session: session,
+			Session: sess,
 			Role:    role,
 			Rig:     rig,
 			Worker:  worker,
@@ -633,8 +607,20 @@ func queryDigestBeads(days int) ([]CostEntry, error) {
 			continue
 		}
 
-		// Extract individual session entries from the digest
-		entries = append(entries, digest.Sessions...)
+		// If the digest has per-session data (old format), use it directly.
+		// Otherwise, synthesize entries from the aggregate ByRole data.
+		if len(digest.Sessions) > 0 {
+			entries = append(entries, digest.Sessions...)
+		} else {
+			for role, cost := range digest.ByRole {
+				entries = append(entries, CostEntry{
+					SessionID: fmt.Sprintf("digest-%s-%s", digest.Date, role),
+					Role:      role,
+					CostUSD:   cost,
+					EndedAt:   digestDate,
+				})
+			}
+		}
 	}
 
 	return entries, nil
@@ -829,7 +815,7 @@ func extractCostFromWorkDir(workDir string) (float64, error) {
 
 // getTmuxSessionWorkDir gets the current working directory of a tmux session.
 func getTmuxSessionWorkDir(session string) (string, error) {
-	cmd := exec.Command("tmux", "display-message", "-t", session, "-p", "#{pane_current_path}")
+	cmd := tmux.BuildCommand("display-message", "-t", session, "-p", "#{pane_current_path}")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -932,13 +918,10 @@ type CostLogEntry struct {
 	WorkItem  string    `json:"work_item,omitempty"`
 }
 
-// getCostsLogPath returns the path to the costs log file (~/.gt/costs.jsonl).
+// getCostsLogPath returns the path to the costs log file.
+// Location: $GT_HOME/.gt/costs.jsonl when GT_HOME is set, otherwise ~/.gt/.
 func getCostsLogPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/gt-costs.jsonl" // Fallback
-	}
-	return filepath.Join(home, ".gt", "costs.jsonl")
+	return filepath.Join(gtDataDir(), "costs.jsonl")
 }
 
 // runCostsRecord captures the final cost from a session and appends it to a local log file.
@@ -959,7 +942,12 @@ func runCostsRecord(cmd *cobra.Command, args []string) error {
 		session = detectCurrentTmuxSession()
 	}
 	if session == "" {
-		return fmt.Errorf("--session flag required (or set GT_SESSION env var, or GT_RIG/GT_ROLE)")
+		// Not a Gas Town session (e.g., Claude Code launched outside gt agent system).
+		// Exit silently — no costs to record.
+		if costsVerbose {
+			fmt.Fprintf(os.Stderr, "[costs] no session context found, skipping costs record\n")
+		}
+		return nil
 	}
 
 	// Get working directory from environment or tmux session
@@ -1044,40 +1032,50 @@ func runCostsRecord(cmd *cobra.Command, args []string) error {
 }
 
 // deriveSessionName derives the tmux session name from GT_* environment variables.
-// Session naming patterns:
-//   - Polecats: gt-{rig}-{polecat} (e.g., gt-gastown-toast)
-//   - Crew: gt-{rig}-crew-{crew} (e.g., gt-gastown-crew-max)
-//   - Witness/Refinery: gt-{rig}-{role} (e.g., gt-gastown-witness)
-//   - Mayor/Deacon: gt-{town}-{role} (e.g., gt-ai-mayor)
+// Uses session.* helpers for canonical naming. Parses GT_ROLE via parseRoleString
+// so compound forms (e.g. "gastown/witness") resolve to their canonical session names.
 func deriveSessionName() string {
 	role := os.Getenv("GT_ROLE")
 	rig := os.Getenv("GT_RIG")
 	polecat := os.Getenv("GT_POLECAT")
 	crew := os.Getenv("GT_CREW")
-	town := os.Getenv("GT_TOWN")
 
-	// Polecat: gt-{rig}-{polecat}
+	// Parse GT_ROLE once to handle both bare and compound forms.
+	parsedRole, _, parsedName := parseRoleString(role)
+
+	// Polecat: {prefix}-{polecat}
+	// Gate on GT_ROLE: coordinators may have stale GT_POLECAT from spawning polecats.
 	if polecat != "" && rig != "" {
-		return fmt.Sprintf("gt-%s-%s", rig, polecat)
-	}
-
-	// Crew: gt-{rig}-crew-{crew}
-	if crew != "" && rig != "" {
-		return fmt.Sprintf("gt-%s-crew-%s", rig, crew)
-	}
-
-	// Town-level roles (mayor, deacon): gt-{town}-{role} or gt-{role}
-	if role == "mayor" || role == "deacon" {
-		if town != "" {
-			return fmt.Sprintf("gt-%s-%s", town, role)
+		if role == "" || parsedRole == RolePolecat {
+			return session.PolecatSessionName(session.PrefixFor(rig), polecat)
 		}
-		// No town set - use simple gt-{role} pattern
-		return fmt.Sprintf("gt-%s", role)
 	}
 
-	// Rig-based roles (witness, refinery): gt-{rig}-{role}
-	if role != "" && rig != "" {
-		return fmt.Sprintf("gt-%s-%s", rig, role)
+	// Crew: {prefix}-crew-{crew} (from GT_CREW or parsed compound role)
+	if parsedRole == RoleCrew && parsedName != "" && rig != "" {
+		return session.CrewSessionName(session.PrefixFor(rig), parsedName)
+	}
+	if crew != "" && rig != "" {
+		return session.CrewSessionName(session.PrefixFor(rig), crew)
+	}
+
+	// Town-level roles (mayor, deacon)
+	if parsedRole == RoleMayor {
+		return session.MayorSessionName()
+	}
+	if parsedRole == RoleDeacon {
+		return session.DeaconSessionName()
+	}
+
+	// Rig-based roles (witness, refinery): {prefix}-{role}
+	if rig != "" {
+		prefix := session.PrefixFor(rig)
+		switch parsedRole {
+		case RoleWitness:
+			return session.WitnessSessionName(prefix)
+		case RoleRefinery:
+			return session.RefinerySessionName(prefix)
+		}
 	}
 
 	return ""
@@ -1085,10 +1083,14 @@ func deriveSessionName() string {
 
 // detectCurrentTmuxSession returns the current tmux session name if running inside tmux.
 // Uses `tmux display-message -p '#S'` which prints the session name.
-// Note: We don't check TMUX env var because it may not be inherited when Claude Code
-// runs bash commands, even though we are inside a tmux session.
+// Note: TMUX_PANE may not be inherited when Claude Code runs bash commands,
+// so we return "" as a safe fallback.
 func detectCurrentTmuxSession() string {
-	cmd := exec.Command("tmux", "display-message", "-p", "#S")
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return ""
+	}
+	cmd := tmux.BuildCommand("display-message", "-t", pane, "-p", "#S")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -1108,7 +1110,17 @@ type CostDigest struct {
 	Date         string             `json:"date"`
 	TotalUSD     float64            `json:"total_usd"`
 	SessionCount int                `json:"session_count"`
-	Sessions     []CostEntry        `json:"sessions"`
+	Sessions     []CostEntry        `json:"sessions,omitempty"`
+	ByRole       map[string]float64 `json:"by_role"`
+	ByRig        map[string]float64 `json:"by_rig,omitempty"`
+}
+
+// CostDigestPayload is the compact payload stored in the bead.
+// It excludes per-session details to avoid exceeding Dolt column size limits.
+type CostDigestPayload struct {
+	Date         string             `json:"date"`
+	TotalUSD     float64            `json:"total_usd"`
+	SessionCount int                `json:"session_count"`
 	ByRole       map[string]float64 `json:"by_role"`
 	ByRig        map[string]float64 `json:"by_rig,omitempty"`
 }
@@ -1283,8 +1295,16 @@ func createCostDigestBead(digest CostDigest) (string, error) {
 		desc.WriteString("\n")
 	}
 
-	// Build payload JSON with full session details
-	payloadJSON, err := json.Marshal(digest)
+	// Build compact payload (aggregate only, no per-session details).
+	// Per-session details can be thousands of records and exceed Dolt column limits.
+	compactPayload := CostDigestPayload{
+		Date:         digest.Date,
+		TotalUSD:     digest.TotalUSD,
+		SessionCount: digest.SessionCount,
+		ByRole:       digest.ByRole,
+		ByRig:        digest.ByRig,
+	}
+	payloadJSON, err := json.Marshal(compactPayload)
 	if err != nil {
 		return "", fmt.Errorf("marshaling digest payload: %w", err)
 	}
@@ -1375,96 +1395,3 @@ func deleteSessionCostEntries(targetDate time.Time) (int, error) {
 	return deletedCount, nil
 }
 
-// runCostsMigrate migrates legacy session.ended beads to the new architecture.
-func runCostsMigrate(cmd *cobra.Command, args []string) error {
-	// Query all session.ended events (both open and closed)
-	listArgs := []string{
-		"list",
-		"--type=event",
-		"--all",
-		"--limit=0",
-		"--json",
-	}
-
-	listCmd := exec.Command("bd", listArgs...)
-	listOutput, err := listCmd.Output()
-	if err != nil {
-		fmt.Println(style.Dim.Render("No events found or bd command failed"))
-		return nil
-	}
-
-	var listItems []EventListItem
-	if err := json.Unmarshal(listOutput, &listItems); err != nil {
-		return fmt.Errorf("parsing event list: %w", err)
-	}
-
-	if len(listItems) == 0 {
-		fmt.Println(style.Dim.Render("No events found"))
-		return nil
-	}
-
-	// Get full details for all events
-	showArgs := []string{"show", "--json"}
-	for _, item := range listItems {
-		showArgs = append(showArgs, item.ID)
-	}
-
-	showCmd := exec.Command("bd", showArgs...)
-	showOutput, err := showCmd.Output()
-	if err != nil {
-		return fmt.Errorf("showing events: %w", err)
-	}
-
-	var events []SessionEvent
-	if err := json.Unmarshal(showOutput, &events); err != nil {
-		return fmt.Errorf("parsing event details: %w", err)
-	}
-
-	// Find open session.ended events
-	var openEvents []SessionEvent
-	var closedCount int
-	for _, event := range events {
-		if event.EventKind != "session.ended" {
-			continue
-		}
-		if event.Status == "closed" {
-			closedCount++
-			continue
-		}
-		openEvents = append(openEvents, event)
-	}
-
-	fmt.Printf("%s Legacy session.ended beads:\n", style.Bold.Render("📊"))
-	fmt.Printf("  Closed: %d (no action needed)\n", closedCount)
-	fmt.Printf("  Open:   %d (will be closed)\n", len(openEvents))
-
-	if len(openEvents) == 0 {
-		fmt.Println(style.Success.Render("\n✓ No migration needed - all session.ended events are already closed"))
-		return nil
-	}
-
-	if migrateDryRun {
-		fmt.Printf("\n%s Would close %d open session.ended events\n", style.Bold.Render("[DRY RUN]"), len(openEvents))
-		for _, event := range openEvents {
-			fmt.Printf("  - %s: %s\n", event.ID, event.Title)
-		}
-		return nil
-	}
-
-	// Close all open session.ended events
-	closedMigrated := 0
-	for _, event := range openEvents {
-		closeCmd := exec.Command("bd", "close", event.ID, "--reason=migrated to log-file architecture")
-		if err := closeCmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not close %s: %v\n", event.ID, err)
-			continue
-		}
-		closedMigrated++
-	}
-
-	fmt.Printf("\n%s Migrated %d session.ended events (closed)\n", style.Success.Render("✓"), closedMigrated)
-	fmt.Println(style.Dim.Render("Legacy beads preserved for historical queries."))
-	fmt.Println(style.Dim.Render("New session costs will use ~/.gt/costs.jsonl + daily digests."))
-
-	return nil
-}

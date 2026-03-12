@@ -2,6 +2,7 @@
 package deacon
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -154,7 +155,7 @@ func ScanStaleHooks(townRoot string, cfg *StaleHookConfig) (*StaleHookScanResult
 
 // listHookedBeads returns all beads with status=hooked.
 func listHookedBeads(townRoot string) ([]*HookedBead, error) {
-	cmd := exec.Command("bd", "list", "--status=hooked", "--json", "--limit=0")
+	cmd := exec.Command("bd", "list", "--status=hooked", "--json", "--flat", "--limit=0")
 	cmd.Dir = townRoot
 
 	output, err := cmd.Output()
@@ -166,7 +167,8 @@ func listHookedBeads(townRoot string) ([]*HookedBead, error) {
 		return nil, err
 	}
 
-	if len(output) == 0 || string(output) == "[]" || string(output) == "null\n" {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || string(trimmed) == "null" || (trimmed[0] != '[' && trimmed[0] != '{') {
 		return nil, nil
 	}
 
@@ -179,44 +181,13 @@ func listHookedBeads(townRoot string) ([]*HookedBead, error) {
 }
 
 // assigneeToSessionName converts an assignee address to a tmux session name.
-// Supports formats like "gastown/polecats/max", "gastown/crew/joe", etc.
+// Delegates to session.ParseAddress for consistent parsing across the codebase.
 func assigneeToSessionName(assignee string) string {
-	parts := strings.Split(assignee, "/")
-
-	switch len(parts) {
-	case 1:
-		// Simple names like "deacon", "mayor"
-		switch assignee {
-		case "deacon":
-			return session.DeaconSessionName()
-		case "mayor":
-			return session.MayorSessionName()
-		default:
-			return ""
-		}
-	case 2:
-		// rig/role: "gastown/witness", "gastown/refinery"
-		rig, role := parts[0], parts[1]
-		switch role {
-		case "witness", "refinery":
-			return fmt.Sprintf("gt-%s-%s", rig, role)
-		default:
-			return ""
-		}
-	case 3:
-		// rig/type/name: "gastown/polecats/max", "gastown/crew/joe"
-		rig, agentType, name := parts[0], parts[1], parts[2]
-		switch agentType {
-		case "polecats":
-			return fmt.Sprintf("gt-%s-%s", rig, name)
-		case "crew":
-			return fmt.Sprintf("gt-%s-crew-%s", rig, name)
-		default:
-			return ""
-		}
-	default:
+	identity, err := session.ParseAddress(assignee)
+	if err != nil {
 		return ""
 	}
+	return identity.SessionName()
 }
 
 // checkWorktreeState checks an agent's worktree for uncommitted changes or

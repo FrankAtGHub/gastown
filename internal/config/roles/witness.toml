@@ -7,13 +7,13 @@ nudge = "Run 'gt prime' to check worker status and begin patrol cycle."
 prompt_template = "witness.md.tmpl"
 
 [session]
-pattern = "gt-{rig}-witness"
+pattern = "{prefix}-witness"
 work_dir = "{town}/{rig}/witness"
 needs_pre_sync = false
 start_command = "exec claude --dangerously-skip-permissions"
 
 [env]
-GT_ROLE = "witness"
+GT_ROLE = "{rig}/witness"
 GT_SCOPE = "rig"
 
 [health]

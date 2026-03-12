@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +20,7 @@ func TestAgentEnv_Mayor(t *testing.T) {
 	assertEnv(t, env, "GT_ROOT", "/town")
 	assertEnv(t, env, "GIT_CEILING_DIRECTORIES", "/town") // prevents git walking to umbrella
 	assertEnv(t, env, "NODE_OPTIONS", "")                  // cleared to prevent debugger inheritance
+	assertEnv(t, env, "CLAUDECODE", "")                    // cleared to prevent nested session detection
 	assertNotSet(t, env, "GT_RIG")
 }
 
@@ -52,6 +56,7 @@ func TestAgentEnv_Polecat(t *testing.T) {
 	assertEnv(t, env, "BEADS_AGENT_NAME", "myrig/Toast")
 	assertEnv(t, env, "BD_DOLT_AUTO_COMMIT", "off") // gt-5cc2p: prevent manifest contention
 	assertEnv(t, env, "NODE_OPTIONS", "")            // cleared to prevent debugger inheritance
+	assertEnv(t, env, "CLAUDECODE", "")              // cleared to prevent nested session detection
 }
 
 func TestAgentEnv_Crew(t *testing.T) {
@@ -113,6 +118,22 @@ func TestAgentEnv_Boot(t *testing.T) {
 	assertNotSet(t, env, "GT_RIG")
 }
 
+func TestAgentEnv_Dog(t *testing.T) {
+	t.Parallel()
+	env := AgentEnv(AgentEnvConfig{
+		Role:      "dog",
+		AgentName: "alpha",
+		TownRoot:  "/town",
+	})
+
+	assertEnv(t, env, "GT_ROLE", "dog")
+	assertEnv(t, env, "GT_DOG_NAME", "alpha")
+	assertEnv(t, env, "BD_ACTOR", "deacon/dogs/alpha")
+	assertEnv(t, env, "GIT_AUTHOR_NAME", "alpha")
+	assertEnv(t, env, "GT_ROOT", "/town")
+	assertNotSet(t, env, "GT_RIG")
+}
+
 func TestAgentEnv_WithRuntimeConfigDir(t *testing.T) {
 	t.Parallel()
 	env := AgentEnv(AgentEnvConfig{
@@ -169,6 +190,151 @@ func TestAgentEnv_EmptyTownRootOmitted(t *testing.T) {
 	// Other keys should still be set
 	assertEnv(t, env, "GT_ROLE", "myrig/polecats/Toast") // compound format
 	assertEnv(t, env, "GT_RIG", "myrig")
+}
+
+func TestAgentEnv_WithAgentOverride(t *testing.T) {
+	t.Parallel()
+	env := AgentEnv(AgentEnvConfig{
+		Role:      "polecat",
+		Rig:       "myrig",
+		AgentName: "Toast",
+		TownRoot:  "/town",
+		Agent:     "codex",
+	})
+
+	assertEnv(t, env, "GT_AGENT", "codex")
+}
+
+func TestAgentEnv_WithoutAgentOverride(t *testing.T) {
+	t.Parallel()
+	env := AgentEnv(AgentEnvConfig{
+		Role:      "polecat",
+		Rig:       "myrig",
+		AgentName: "Toast",
+		TownRoot:  "/town",
+	})
+
+	assertNotSet(t, env, "GT_AGENT")
+}
+
+// TestAgentEnv_WithoutAgentOverride_RequiresFallback documents that callers
+// must set GT_AGENT from RuntimeConfig.ResolvedAgent when AgentEnvConfig.Agent
+// is empty. AgentEnv intentionally omits GT_AGENT without an explicit override,
+// but tmux session table consumers (IsAgentAlive, GT_AGENT validation) need it.
+// Regression test for PR #1776 which removed the session_manager.go fallback.
+func TestAgentEnv_WithoutAgentOverride_RequiresFallback(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the default polecat dispatch path (no --agent flag).
+	// This is what lifecycle.go calls when gt scheduler run / gt sling dispatches.
+	env := AgentEnv(AgentEnvConfig{
+		Role:      "polecat",
+		Rig:       "myrig",
+		AgentName: "Toast",
+		TownRoot:  "/town",
+		Agent:     "", // no explicit override — the common case
+	})
+
+	// GT_AGENT must NOT be in the map — this confirms callers need a fallback.
+	// session_manager.go must compensate by writing runtimeConfig.ResolvedAgent
+	// to the tmux session table via SetEnvironment.
+	if _, ok := env["GT_AGENT"]; ok {
+		t.Error("AgentEnv should NOT set GT_AGENT when Agent is empty; " +
+			"callers must fall back to runtimeConfig.ResolvedAgent")
+	}
+
+	// With an explicit override, GT_AGENT IS set.
+	envWithOverride := AgentEnv(AgentEnvConfig{
+		Role:      "polecat",
+		Rig:       "myrig",
+		AgentName: "Toast",
+		TownRoot:  "/town",
+		Agent:     "codex",
+	})
+	assertEnv(t, envWithOverride, "GT_AGENT", "codex")
+}
+
+// TestAgentEnv_AgentOverrideAllRoles verifies that GT_AGENT is emitted for
+// every role that supports agent overrides. This mirrors the actual
+// AgentEnvConfig constructions in each manager's Start method.
+func TestAgentEnv_AgentOverrideAllRoles(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cfg  AgentEnvConfig
+	}{
+		{
+			name: "polecat via session_manager",
+			cfg: AgentEnvConfig{
+				Role:      "polecat",
+				Rig:       "rig1",
+				AgentName: "Toast",
+				TownRoot:  "/town",
+				Agent:     "codex",
+			},
+		},
+		{
+			name: "witness",
+			cfg: AgentEnvConfig{
+				Role:     "witness",
+				Rig:      "rig1",
+				TownRoot: "/town",
+				Agent:    "gemini",
+			},
+		},
+		{
+			name: "refinery",
+			cfg: AgentEnvConfig{
+				Role:     "refinery",
+				Rig:      "rig1",
+				TownRoot: "/town",
+				Agent:    "codex",
+			},
+		},
+		{
+			name: "deacon",
+			cfg: AgentEnvConfig{
+				Role:     "deacon",
+				TownRoot: "/town",
+				Agent:    "gemini",
+			},
+		},
+		{
+			name: "crew",
+			cfg: AgentEnvConfig{
+				Role:             "crew",
+				Rig:              "rig1",
+				AgentName:        "worker1",
+				TownRoot:         "/town",
+				RuntimeConfigDir: "/config",
+				Agent:            "codex",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := AgentEnv(tc.cfg)
+			assertEnv(t, env, "GT_AGENT", tc.cfg.Agent)
+		})
+	}
+}
+
+// TestAgentEnv_NoAgentOverrideOmitsKey verifies GT_AGENT is absent when
+// Agent is empty, for all roles. This is the default behavior.
+func TestAgentEnv_NoAgentOverrideOmitsKey(t *testing.T) {
+	t.Parallel()
+	roles := []string{"polecat", "witness", "refinery", "deacon", "crew"}
+	for _, role := range roles {
+		t.Run(role, func(t *testing.T) {
+			t.Parallel()
+			env := AgentEnv(AgentEnvConfig{
+				Role:     role,
+				TownRoot: "/town",
+			})
+			assertNotSet(t, env, "GT_AGENT")
+		})
+	}
 }
 
 func TestShellQuote(t *testing.T) {
@@ -505,6 +671,71 @@ func TestSanitizeAgentEnv(t *testing.T) {
 	}
 }
 
+func TestSanitizeAgentEnv_ClearsClaudeCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		resolvedEnv map[string]string
+		callerEnv   map[string]string
+		wantKey     bool   // expect CLAUDECODE to be present in resolvedEnv
+		wantValue   string // expected value if present
+	}{
+		{
+			name:        "neither map has CLAUDECODE — sets empty",
+			resolvedEnv: map[string]string{"GT_ROLE": "polecat"},
+			callerEnv:   map[string]string{"GT_ROLE": "polecat"},
+			wantKey:     true,
+			wantValue:   "",
+		},
+		{
+			name:        "caller provides CLAUDECODE — preserved",
+			resolvedEnv: map[string]string{"CLAUDECODE": "1"},
+			callerEnv:   map[string]string{"CLAUDECODE": "1"},
+			wantKey:     true,
+			wantValue:   "1",
+		},
+		{
+			name:        "inherited CLAUDECODE not in callerEnv — cleared",
+			resolvedEnv: map[string]string{"CLAUDECODE": "1"},
+			callerEnv:   map[string]string{},
+			wantKey:     true,
+			wantValue:   "",
+		},
+		{
+			name:        "empty maps — sets empty",
+			resolvedEnv: map[string]string{},
+			callerEnv:   map[string]string{},
+			wantKey:     true,
+			wantValue:   "",
+		},
+		{
+			name:        "same map without CLAUDECODE — sets empty (lifecycle.go pattern)",
+			resolvedEnv: map[string]string{"GT_ROLE": "polecat", "GT_RIG": "myrig"},
+			callerEnv:   nil, // will be set to same map below
+			wantKey:     true,
+			wantValue:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callerEnv := tt.callerEnv
+			if callerEnv == nil {
+				callerEnv = tt.resolvedEnv
+			}
+			SanitizeAgentEnv(tt.resolvedEnv, callerEnv)
+			val, ok := tt.resolvedEnv["CLAUDECODE"]
+			if ok != tt.wantKey {
+				t.Errorf("CLAUDECODE present=%v, want %v", ok, tt.wantKey)
+			}
+			if ok && val != tt.wantValue {
+				t.Errorf("CLAUDECODE=%q, want %q", val, tt.wantValue)
+			}
+		})
+	}
+}
+
 func TestAgentEnv_IncludesNodeOptionsClearing(t *testing.T) {
 	t.Parallel()
 	// Verify AgentEnv always includes NODE_OPTIONS="" regardless of role.
@@ -535,6 +766,117 @@ func TestAgentEnv_IncludesNodeOptionsClearing(t *testing.T) {
 	}
 }
 
+func TestAgentEnv_IncludesClaudeCodeClearing(t *testing.T) {
+	t.Parallel()
+	// Verify AgentEnv always includes CLAUDECODE="" regardless of role.
+	// This prevents nested session detection when gt sling is invoked
+	// from within a Claude Code session (issue #1666).
+	roles := []struct {
+		role      string
+		rig       string
+		agentName string
+	}{
+		{"mayor", "", ""},
+		{"deacon", "", ""},
+		{"boot", "", ""},
+		{"witness", "myrig", ""},
+		{"refinery", "myrig", ""},
+		{"polecat", "myrig", "Toast"},
+		{"crew", "myrig", "emma"},
+	}
+	for _, r := range roles {
+		t.Run(r.role, func(t *testing.T) {
+			env := AgentEnv(AgentEnvConfig{
+				Role:      r.role,
+				Rig:       r.rig,
+				AgentName: r.agentName,
+				TownRoot:  "/town",
+			})
+			assertEnv(t, env, "CLAUDECODE", "")
+		})
+	}
+}
+
+func TestAgentEnv_DisablesBdBackup(t *testing.T) {
+	t.Parallel()
+	// Verify AgentEnv always includes BD_BACKUP_ENABLED=false regardless of role.
+	// In Gas Town, Dolt is the persistent data store and the daemon provides
+	// centralized backup patrols (dolt_backup, jsonl_git_backup). bd's per-repo
+	// auto-backup is redundant and pollutes rig git history via git add -f.
+	// See: https://github.com/steveyegge/beads/issues/2241
+	roles := []struct {
+		role      string
+		rig       string
+		agentName string
+	}{
+		{"mayor", "", ""},
+		{"deacon", "", ""},
+		{"boot", "", ""},
+		{"witness", "myrig", ""},
+		{"refinery", "myrig", ""},
+		{"polecat", "myrig", "Toast"},
+		{"crew", "myrig", "emma"},
+	}
+	for _, r := range roles {
+		t.Run(r.role, func(t *testing.T) {
+			env := AgentEnv(AgentEnvConfig{
+				Role:      r.role,
+				Rig:       r.rig,
+				AgentName: r.agentName,
+				TownRoot:  "/town",
+			})
+			assertEnv(t, env, "BD_BACKUP_ENABLED", "false")
+		})
+	}
+}
+
+// TestAgentEnv_PropagatesDoltPort verifies that GT_DOLT_PORT and BEADS_DOLT_PORT
+// are propagated from the process env to agent sessions, preventing bd from
+// auto-starting rogue Dolt instances. (GH#2412)
+func TestAgentEnv_PropagatesDoltPort(t *testing.T) {
+	// Subtest: GT_DOLT_PORT set → both vars propagated
+	t.Run("gt_dolt_port_set", func(t *testing.T) {
+		t.Setenv("GT_DOLT_PORT", "13307")
+		t.Setenv("BEADS_DOLT_PORT", "")
+		env := AgentEnv(AgentEnvConfig{Role: "crew", Rig: "myrig", AgentName: "alice"})
+		assertEnv(t, env, "GT_DOLT_PORT", "13307")
+		assertEnv(t, env, "BEADS_DOLT_PORT", "13307")
+	})
+
+	// Subtest: BEADS_DOLT_PORT explicitly set → preserved
+	t.Run("beads_dolt_port_override", func(t *testing.T) {
+		t.Setenv("GT_DOLT_PORT", "13307")
+		t.Setenv("BEADS_DOLT_PORT", "99999")
+		env := AgentEnv(AgentEnvConfig{Role: "polecat", Rig: "myrig", AgentName: "Toast"})
+		assertEnv(t, env, "GT_DOLT_PORT", "13307")
+		assertEnv(t, env, "BEADS_DOLT_PORT", "99999")
+	})
+
+	// Subtest: only BEADS_DOLT_PORT set (no GT_DOLT_PORT) → still propagated
+	t.Run("beads_only", func(t *testing.T) {
+		t.Setenv("GT_DOLT_PORT", "")
+		t.Setenv("BEADS_DOLT_PORT", "3307")
+		env := AgentEnv(AgentEnvConfig{Role: "witness", Rig: "myrig"})
+		if _, ok := env["GT_DOLT_PORT"]; ok {
+			t.Error("GT_DOLT_PORT should not be set when env is empty")
+		}
+		assertEnv(t, env, "BEADS_DOLT_PORT", "3307")
+	})
+
+	// Subtest: neither set → neither propagated
+	t.Run("neither_set", func(t *testing.T) {
+		t.Setenv("GT_DOLT_PORT", "")
+		t.Setenv("BEADS_DOLT_PORT", "")
+		env := AgentEnv(AgentEnvConfig{Role: "mayor"})
+		if _, ok := env["GT_DOLT_PORT"]; ok {
+			t.Error("GT_DOLT_PORT should not be set")
+		}
+		if _, ok := env["BEADS_DOLT_PORT"]; ok {
+			t.Error("BEADS_DOLT_PORT should not be set")
+		}
+	})
+}
+
 func TestBuildStartupCommandWithEnv_IncludesNodeOptions(t *testing.T) {
 	t.Parallel()
 	// Integration test: verify BuildStartupCommandWithEnv output includes NODE_OPTIONS=
@@ -548,4 +890,332 @@ func TestBuildStartupCommandWithEnv_IncludesNodeOptions(t *testing.T) {
 	if result != expected {
 		t.Errorf("BuildStartupCommandWithEnv() = %q, want %q", result, expected)
 	}
+}
+
+func TestSanitizeOTELAttrValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "simple string unchanged",
+			input:  "hello world",
+			maxLen: 50,
+			want:   "hello world",
+		},
+		{
+			name:   "first line only",
+			input:  "first line\nsecond line\nthird line",
+			maxLen: 100,
+			want:   "first line",
+		},
+		{
+			name:   "commas replaced with pipe",
+			input:  "a,b,c",
+			maxLen: 50,
+			want:   "a|b|c",
+		},
+		{
+			name:   "truncated to maxLen",
+			input:  "abcdefghij",
+			maxLen: 5,
+			want:   "abcde",
+		},
+		{
+			name:   "beacon first line",
+			input:  "[GAS TOWN] polecat rust (rig: gastown) <- witness • 2025-12-30T15:42 • assigned:gt-abc12\n\nRun `gt prime --hook`",
+			maxLen: 120,
+			want:   "[GAS TOWN] polecat rust (rig: gastown) <- witness • 2025-12-30T15:42 • assigned:gt-abc12",
+		},
+		{
+			name:   "trims leading/trailing space",
+			input:  "  hello  ",
+			maxLen: 50,
+			want:   "hello",
+		},
+		{
+			name:   "empty string",
+			input:  "",
+			maxLen: 50,
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeOTELAttrValue(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("sanitizeOTELAttrValue() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentEnv_OTELPromptAndTown(t *testing.T) {
+	t.Setenv("GT_OTEL_METRICS_URL", "http://localhost:8428/opentelemetry/api/v1/push")
+	t.Setenv("GT_OTEL_LOGS_URL", "http://localhost:9428/insert/opentelemetry/v1/logs")
+
+	beacon := "[GAS TOWN] polecat rust (rig: gastown) <- witness • 2025-12-30T15:42 • assigned:gt-abc12\n\nRun `gt prime --hook`"
+	env := AgentEnv(AgentEnvConfig{
+		Role:      "polecat",
+		Rig:       "gastown",
+		AgentName: "rust",
+		TownRoot:  "/home/user/mytown",
+		Prompt:    beacon,
+	})
+
+	attrs := env["OTEL_RESOURCE_ATTRIBUTES"]
+	if attrs == "" {
+		t.Fatal("expected OTEL_RESOURCE_ATTRIBUTES to be set")
+	}
+
+	// gt.town should be basename of TownRoot
+	if !containsAttr(attrs, "gt.town=mytown") {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES missing gt.town=mytown, got: %s", attrs)
+	}
+
+	// gt.prompt should be the first line of the beacon (no newlines, commas replaced)
+	wantPromptPrefix := "gt.prompt=[GAS TOWN] polecat rust"
+	if !contains(attrs, wantPromptPrefix) {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES missing %q, got: %s", wantPromptPrefix, attrs)
+	}
+
+	// No newlines in the value
+	if contains(attrs, "\n") {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES must not contain newlines, got: %s", attrs)
+	}
+}
+
+func TestAgentEnv_OTELNoPromptNoTown(t *testing.T) {
+	t.Setenv("GT_OTEL_METRICS_URL", "http://localhost:8428/opentelemetry/api/v1/push")
+	t.Setenv("GT_OTEL_LOGS_URL", "http://localhost:9428/insert/opentelemetry/v1/logs")
+
+	env := AgentEnv(AgentEnvConfig{
+		Role: "mayor",
+		// No Prompt, no TownRoot
+	})
+
+	attrs := env["OTEL_RESOURCE_ATTRIBUTES"]
+	if contains(attrs, "gt.prompt") {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES should not have gt.prompt when Prompt is empty, got: %s", attrs)
+	}
+	if contains(attrs, "gt.town") {
+		t.Errorf("OTEL_RESOURCE_ATTRIBUTES should not have gt.town when TownRoot is empty, got: %s", attrs)
+	}
+}
+
+func containsAttr(attrs, attr string) bool {
+	for _, part := range splitAttrs(attrs) {
+		if part == attr {
+			return true
+		}
+	}
+	return false
+}
+
+func splitAttrs(attrs string) []string {
+	var parts []string
+	for _, p := range strings.Split(attrs, ",") {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
+func containsStr(s, sub string) bool {
+	return strings.Contains(s, sub)
+}
+
+// ---------------------------------------------------------------------------
+// Dolt port injection tests (GH #2405 / GH #2406)
+// ---------------------------------------------------------------------------
+
+func TestParsePortFromConfigYAML(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{
+			name: "standard gt-generated config",
+			yaml: "log_level: warning\n\nlistener:\n  port: 3307\n  max_connections: 1000\n",
+			want: 3307,
+		},
+		{
+			name: "custom port",
+			yaml: "listener:\n  port: 3308\n",
+			want: 3308,
+		},
+		{
+			name: "no listener block",
+			yaml: "log_level: warning\n",
+			want: 0,
+		},
+		{
+			name: "listener without port",
+			yaml: "listener:\n  max_connections: 1000\n",
+			want: 0,
+		},
+		{
+			name: "empty file",
+			yaml: "",
+			want: 0,
+		},
+		{
+			name: "port in non-listener block ignored",
+			yaml: "other:\n  port: 9999\n",
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := parsePortFromConfigYAML([]byte(tt.yaml))
+			if got != tt.want {
+				t.Errorf("parsePortFromConfigYAML() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveDoltPort_FromConfigYAML(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	doltDataDir := filepath.Join(tmpDir, ".dolt-data")
+	if err := os.MkdirAll(doltDataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(doltDataDir, "config.yaml"),
+		[]byte("listener:\n  port: 3309\n"),
+		0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveDoltPort(tmpDir)
+	if got != 3309 {
+		t.Errorf("resolveDoltPort() = %d, want 3309", got)
+	}
+}
+
+func TestResolveDoltPort_FromEnvVar(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GT_DOLT_PORT", "3310")
+
+	got := resolveDoltPort(tmpDir)
+	if got != 3310 {
+		t.Errorf("resolveDoltPort() = %d, want 3310", got)
+	}
+}
+
+func TestResolveDoltPort_ConfigYAMLTakesPrecedence(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("GT_DOLT_PORT", "9999")
+
+	doltDataDir := filepath.Join(tmpDir, ".dolt-data")
+	if err := os.MkdirAll(doltDataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(doltDataDir, "config.yaml"),
+		[]byte("listener:\n  port: 3307\n"),
+		0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveDoltPort(tmpDir)
+	if got != 3307 {
+		t.Errorf("resolveDoltPort() = %d, want 3307 (config.yaml > env var)", got)
+	}
+}
+
+func TestResolveDoltPort_FromDaemonJSON(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	mayorDir := filepath.Join(tmpDir, "mayor")
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	daemonJSON := `{"env": {"GT_DOLT_PORT": "3311"}, "type": "daemon-patrol-config"}`
+	if err := os.WriteFile(filepath.Join(mayorDir, "daemon.json"), []byte(daemonJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveDoltPort(tmpDir)
+	if got != 3311 {
+		t.Errorf("resolveDoltPort() = %d, want 3311", got)
+	}
+}
+
+func TestResolveDoltPort_NoConfig(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	got := resolveDoltPort(tmpDir)
+	if got != 0 {
+		t.Errorf("resolveDoltPort() = %d, want 0 (no config)", got)
+	}
+}
+
+func TestAgentEnv_InjectsDoltPort(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	doltDataDir := filepath.Join(tmpDir, ".dolt-data")
+	if err := os.MkdirAll(doltDataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(doltDataDir, "config.yaml"),
+		[]byte("listener:\n  port: 3307\n"),
+		0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	roles := []struct {
+		name string
+		cfg  AgentEnvConfig
+	}{
+		{"mayor", AgentEnvConfig{Role: "mayor", TownRoot: tmpDir}},
+		{"witness", AgentEnvConfig{Role: "witness", Rig: "myrig", TownRoot: tmpDir}},
+		{"refinery", AgentEnvConfig{Role: "refinery", Rig: "myrig", TownRoot: tmpDir}},
+		{"polecat", AgentEnvConfig{Role: "polecat", Rig: "myrig", AgentName: "Toast", TownRoot: tmpDir}},
+		{"crew", AgentEnvConfig{Role: "crew", Rig: "myrig", AgentName: "emma", TownRoot: tmpDir}},
+		{"deacon", AgentEnvConfig{Role: "deacon", TownRoot: tmpDir}},
+	}
+
+	for _, tc := range roles {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := AgentEnv(tc.cfg)
+			assertEnv(t, env, "GT_DOLT_PORT", "3307")
+			assertEnv(t, env, "BEADS_DOLT_PORT", "3307")
+		})
+	}
+}
+
+func TestAgentEnv_NoDoltPortWithoutTownRoot(t *testing.T) {
+	t.Parallel()
+	env := AgentEnv(AgentEnvConfig{
+		Role: "mayor",
+	})
+	assertNotSet(t, env, "GT_DOLT_PORT")
+	assertNotSet(t, env, "BEADS_DOLT_PORT")
+}
+
+func TestAgentEnv_NoDoltPortWithoutConfig(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	env := AgentEnv(AgentEnvConfig{
+		Role:     "mayor",
+		TownRoot: tmpDir,
+	})
+	assertNotSet(t, env, "GT_DOLT_PORT")
+	assertNotSet(t, env, "BEADS_DOLT_PORT")
 }

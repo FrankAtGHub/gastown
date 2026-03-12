@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/crew"
 	"github.com/steveyegge/gastown/internal/daemon"
 	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mayor"
 	"github.com/steveyegge/gastown/internal/polecat"
@@ -42,6 +43,7 @@ var (
 	startCrewRig                string
 	startCrewAccount            string
 	startCrewAgentOverride      string
+	startCostTier               string
 	shutdownGraceful            bool
 	shutdownWait                int
 	shutdownAll                 bool
@@ -132,6 +134,7 @@ func init() {
 	startCmd.Flags().BoolVarP(&startAll, "all", "a", false,
 		"Also start Witnesses and Refineries for all rigs")
 	startCmd.Flags().StringVar(&startAgentOverride, "agent", "", "Agent alias to run Mayor/Deacon with (overrides town default)")
+	startCmd.Flags().StringVar(&startCostTier, "cost-tier", "", "Ephemeral cost tier for this session (standard/economy/budget)")
 
 	startCrewCmd.Flags().StringVar(&startCrewRig, "rig", "", "Rig to use")
 	startCrewCmd.Flags().StringVar(&startCrewAccount, "account", "", "Claude Code account handle to use")
@@ -179,6 +182,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
+	// Apply ephemeral cost tier if specified
+	if startCostTier != "" {
+		if !config.IsValidTier(startCostTier) {
+			return fmt.Errorf("invalid cost tier %q (valid: %s)", startCostTier, strings.Join(config.ValidCostTiers(), ", "))
+		}
+		os.Setenv("GT_COST_TIER", startCostTier)
+		fmt.Printf("Using ephemeral cost tier: %s\n", style.Bold.Render(startCostTier))
+	}
+
 	if err := config.EnsureDaemonPatrolConfig(townRoot); err != nil {
 		fmt.Printf("  %s Could not ensure daemon config: %v\n", style.Dim.Render("○"), err)
 	}
@@ -188,7 +200,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Clean up orphaned tmux sessions before starting new agents.
 	// This prevents session name conflicts and resource accumulation from
 	// zombie sessions (tmux alive but Claude dead).
-	if cleaned, err := t.CleanupOrphanedSessions(); err != nil {
+	if cleaned, err := t.CleanupOrphanedSessions(session.IsKnownSession); err != nil {
 		fmt.Printf("  %s Could not clean orphaned sessions: %v\n", style.Dim.Render("○"), err)
 	} else if cleaned > 0 {
 		fmt.Printf("  %s Cleaned up %d orphaned session(s)\n", style.Bold.Render("✓"), cleaned)
@@ -205,7 +217,35 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// Continue anyway - core agents don't need rigs
 	}
 
-	// Start all agent groups in parallel for maximum speed
+	// Phase 1: Start Dolt server BEFORE agents.
+	// Agents run bd commands on startup (via gt prime → patrol_helpers) that
+	// connect to the Dolt SQL server. Without this sequencing, they race the
+	// server and bd auto-spawns orphan embedded servers. (gt-t2zf)
+	var doltOK bool
+	cfg := doltserver.DefaultConfig(townRoot)
+	if _, err := os.Stat(cfg.DataDir); os.IsNotExist(err) {
+		// No Dolt data dir — nothing to start
+		fmt.Printf("  %s Dolt server skipped (no data dir)\n", style.Dim.Render("○"))
+	} else {
+		running, _, _ := doltserver.IsRunning(townRoot)
+		if running {
+			doltOK = true
+			fmt.Printf("  %s Dolt server already running\n", style.Dim.Render("○"))
+		} else if err := doltserver.Start(townRoot); err != nil {
+			fmt.Printf("  %s Dolt server failed: %v\n", style.Dim.Render("○"), err)
+		} else {
+			doltOK = true
+			fmt.Printf("  %s Dolt server started (port %d)\n", style.Bold.Render("✓"), doltserver.DefaultPort)
+		}
+	}
+
+	// Ensure beads metadata is correct BEFORE agents start.
+	// This prevents bd from seeing stale config and spawning orphan servers.
+	if doltOK {
+		_, _ = doltserver.EnsureAllMetadata(townRoot)
+	}
+
+	// Phase 2: Start all agents in parallel (Dolt is now ready)
 	var wg sync.WaitGroup
 	var mu sync.Mutex // Protects stdout
 	var coreErr error
@@ -271,6 +311,10 @@ func startCoreAgents(townRoot string, agentOverride string, mu *sync.Mutex) erro
 			if errors.Is(err, mayor.ErrAlreadyRunning) {
 				mu.Lock()
 				fmt.Printf("  %s Mayor already running\n", style.Dim.Render("○"))
+				mu.Unlock()
+			} else if errors.Is(err, mayor.ErrACPActive) {
+				mu.Lock()
+				fmt.Printf("  %s Mayor already running (ACP mode)\n", style.Dim.Render("○"))
 				mu.Unlock()
 			} else {
 				errMu.Lock()
@@ -406,15 +450,19 @@ func startConfiguredCrew(t *tmux.Tmux, rigs []*rig.Rig, townRoot string, mu *syn
 }
 
 // startOrRestartCrewMember starts or restarts a single crew member and returns a status message.
+// Uses IsAgentAlive for robust zombie detection (checks pane command + descendant processes),
+// and delegates zombie cleanup to crewMgr.Start() which kills the zombie session and recreates
+// it with fresh env vars and runtime settings.
 func startOrRestartCrewMember(t *tmux.Tmux, r *rig.Rig, crewName, townRoot string) (msg string, started bool) {
 	sessionID := crewSessionName(r.Name, crewName)
 	if running, _ := t.HasSession(sessionID); running {
-		// Session exists - check if agent is still running
-		agentCfg := config.ResolveRoleAgentConfig(constants.RoleCrew, townRoot, r.Path)
-		if !t.IsAgentRunning(sessionID, config.ExpectedPaneCommands(agentCfg)...) {
+		// Session exists - check if agent is still alive
+		// Uses descendant process check instead of pane command check,
+		// since crew members launch via bash -c wrappers (see #1315, #1330).
+		if !t.IsAgentAlive(sessionID) {
 			// Agent has exited, restart it
 			// Build startup beacon for predecessor discovery via /resume
-			address := fmt.Sprintf("%s/crew/%s", r.Name, crewName)
+			address := session.BeaconRecipient("crew", crewName, r.Name)
 			beacon := session.FormatStartupBeacon(session.BeaconConfig{
 				Recipient: address,
 				Sender:    "human",
@@ -426,6 +474,7 @@ func startOrRestartCrewMember(t *tmux.Tmux, r *rig.Rig, crewName, townRoot strin
 			}
 			return fmt.Sprintf("  %s %s/%s agent restarted\n", style.Bold.Render("✓"), r.Name, crewName), true
 		}
+		// Agent is alive — nothing to do
 		return fmt.Sprintf("  %s %s/%s already running\n", style.Dim.Render("○"), r.Name, crewName), false
 	}
 
@@ -511,8 +560,8 @@ func runShutdown(cmd *cobra.Command, args []string) error {
 // categorizeSessions splits sessions into those to stop and those to preserve.
 func categorizeSessions(sessions []string) (toStop, preserved []string) {
 	for _, sess := range sessions {
-		// Gas Town sessions use gt- (rig-level) or hq- (town-level) prefix
-		if !strings.HasPrefix(sess, "gt-") && !strings.HasPrefix(sess, "hq-") {
+		// Gas Town sessions use rig-specific prefixes or hq- (town-level)
+		if !session.IsKnownSession(sess) {
 			continue // Not a Gas Town session
 		}
 
@@ -898,7 +947,7 @@ func stopDaemonIfRunning(townRoot string) {
 	}
 
 	// Fallback: Search for orphaned daemon processes
-	orphaned, err := daemon.FindOrphanedDaemons()
+	orphaned, err := daemon.FindOrphanedDaemons(townRoot)
 	if err != nil {
 		fmt.Printf("  %s Warning: failed to search for orphaned daemons: %v\n",
 			style.Dim.Render("○"), err)
@@ -909,7 +958,7 @@ func stopDaemonIfRunning(townRoot string) {
 		fmt.Printf("  %s Found %d orphaned daemon process(es): %v\n",
 			style.Bold.Render("⚠"), len(orphaned), orphaned)
 
-		killed, err := daemon.KillOrphanedDaemons()
+		killed, err := daemon.KillOrphanedDaemons(townRoot)
 		if err != nil {
 			fmt.Printf("  %s Failed to kill orphaned daemons: %v\n",
 				style.Bold.Render("✗"), err)
@@ -940,11 +989,14 @@ func runStartCrew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// If rig still not specified, try to infer from cwd
+	// If rig still not specified, try to infer from cwd, then by crew name
 	if rigName == "" {
 		rigName, err = inferRigFromCwd(townRoot)
 		if err != nil {
-			return fmt.Errorf("could not determine rig (use --rig flag or rig/name format): %w", err)
+			rigName, err = inferRigFromCrewName(townRoot, name)
+			if err != nil {
+				return fmt.Errorf("could not determine rig (use --rig flag or rig/name format): %w", err)
+			}
 		}
 	}
 
