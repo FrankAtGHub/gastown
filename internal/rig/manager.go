@@ -82,16 +82,17 @@ func convertToSSH(httpsURL string) string {
 
 // RigConfig represents the rig-level configuration (config.json at rig root).
 type RigConfig struct {
-	Type          string       `json:"type"`                     // "rig"
-	Version       int          `json:"version"`                  // schema version
-	Name          string       `json:"name"`                     // rig name
-	GitURL        string       `json:"git_url"`                  // repository URL (fetch/pull)
-	PushURL       string       `json:"push_url,omitempty"`       // optional push URL (fork for read-only upstreams)
-	UpstreamURL   string       `json:"upstream_url,omitempty"`   // optional upstream URL (for fork workflows)
-	LocalRepo     string       `json:"local_repo,omitempty"`     // optional local reference repo
-	DefaultBranch string       `json:"default_branch,omitempty"` // main, master, etc.
-	CreatedAt     time.Time    `json:"created_at"`               // when rig was created
-	Beads         *BeadsConfig `json:"beads,omitempty"`
+	Type          string        `json:"type"`                     // "rig"
+	Version       int           `json:"version"`                  // schema version
+	Name          string        `json:"name"`                     // rig name
+	GitURL        string        `json:"git_url"`                  // repository URL (fetch/pull)
+	PushURL       string        `json:"push_url,omitempty"`       // optional push URL (fork for read-only upstreams)
+	UpstreamURL   string        `json:"upstream_url,omitempty"`   // optional upstream URL (for fork workflows)
+	LocalRepo     string        `json:"local_repo,omitempty"`     // optional local reference repo
+	DefaultBranch string        `json:"default_branch,omitempty"` // main, master, etc.
+	CreatedAt     time.Time     `json:"created_at"`               // when rig was created
+	Beads         *BeadsConfig  `json:"beads,omitempty"`
+	Limits        *LimitsConfig `json:"limits,omitempty"`
 
 	// Persistent polecat pool configuration.
 	// PolecatPoolSize is the number of persistent polecats to create with pool init.
@@ -103,6 +104,11 @@ type RigConfig struct {
 // BeadsConfig represents beads configuration for the rig.
 type BeadsConfig struct {
 	Prefix string `json:"prefix"` // issue prefix (e.g., "gt")
+}
+
+// LimitsConfig represents resource limits for the rig.
+type LimitsConfig struct {
+	MaxPolecats int `json:"max_polecats,omitempty"` // max concurrent polecats (0 = unlimited)
 }
 
 // CurrentRigConfigVersion is the current schema version.

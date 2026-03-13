@@ -991,12 +991,15 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 		}
 	}
 
-	// 3. Check and auto-close completed convoys
+	// 3. Update other worktrees (mayor/rig) so they have the latest changes
+	e.updateOtherWorktrees(mr.Target)
+
+	// 4. Check and auto-close completed convoys
 	// After closing a source issue, its parent convoy may now be complete.
 	// Run convoy check to auto-close and notify subscribers.
 	e.postMergeConvoyCheck(mr)
 
-	// 4. Nudge mayor about successful merge so dispatcher can unblock
+	// 5. Nudge mayor about successful merge so dispatcher can unblock
 	// dependent work. Without this, mayor only discovers completion by polling.
 	// Uses nudge (not mail) to avoid permanent Dolt commits for routine signals (GH#2434).
 	nudgeMsg := fmt.Sprintf("MERGED: %s issue=%s branch=%s", mr.ID, mr.SourceIssue, mr.Branch)
@@ -1006,8 +1009,54 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge mayor about merge: %v\n", err)
 	}
 
-	// 5. Log success
+	// 6. Log success
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
+}
+
+// updateOtherWorktrees updates other worktrees (mayor/rig) after a successful merge.
+// This ensures that mayor/rig stays in sync with the target branch after refinery merges.
+// Without this, mayor/rig falls behind and agents working there have stale code.
+func (e *Engineer) updateOtherWorktrees(target string) {
+	// List of worktrees to update (relative to rig path)
+	worktreePaths := []string{
+		filepath.Join(e.rig.Path, "mayor", "rig"),
+	}
+
+	for _, wtPath := range worktreePaths {
+		// Skip if worktree doesn't exist
+		if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+			continue
+		}
+
+		// Create a git instance for this worktree
+		wtGit := git.NewGit(wtPath)
+
+		// Check current branch
+		currentBranch, err := wtGit.CurrentBranch()
+		if err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not get current branch for %s: %v\n", wtPath, err)
+			continue
+		}
+
+		// Only update if worktree is on the target branch (usually main)
+		if currentBranch != target {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping %s (on %s, not %s)\n", wtPath, currentBranch, target)
+			continue
+		}
+
+		// Fetch and pull to update
+		if err := wtGit.Fetch("origin"); err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to fetch for %s: %v\n", wtPath, err)
+			continue
+		}
+
+		if err := wtGit.Pull("origin", target); err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to pull for %s: %v\n", wtPath, err)
+			continue
+		}
+
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Updated worktree: %s\n", wtPath)
+	}
 }
 
 // HandleMRInfoFailure handles a failed merge from MRInfo.

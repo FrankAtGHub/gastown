@@ -664,7 +664,9 @@ func initTownBeads(townPath string) error {
 		fmt.Printf("   %s Could not set allowed_prefixes: %s\n", style.Dim.Render("⚠"), strings.TrimSpace(string(prefixOutput)))
 	}
 
-	// Ensure issues.jsonl exists — bd expects this file for git-tracked issue data.
+	// Ensure issues.jsonl exists BEFORE creating routes.jsonl.
+	// If routes.jsonl is created first, bd's auto-export will write issues to routes.jsonl,
+	// corrupting it. Creating an empty issues.jsonl prevents this.
 	issuesJSONL := filepath.Join(townPath, ".beads", "issues.jsonl")
 	if _, err := os.Stat(issuesJSONL); os.IsNotExist(err) {
 		if err := os.WriteFile(issuesJSONL, []byte{}, 0644); err != nil {
@@ -677,12 +679,6 @@ func initTownBeads(townPath string) error {
 	if err := beads.AppendRoute(townPath, beads.Route{Prefix: "hq-", Path: "."}); err != nil {
 		// Non-fatal: routing still works in many contexts, but explicit mapping is preferred.
 		fmt.Printf("   %s Could not update routes.jsonl: %v\n", style.Dim.Render("⚠"), err)
-	}
-
-	// Register hq-cv- prefix for convoy beads (auto-created by gt sling).
-	// Convoys use hq-cv-* IDs for visual distinction from other town beads.
-	if err := beads.AppendRoute(townPath, beads.Route{Prefix: "hq-cv-", Path: "."}); err != nil {
-		fmt.Printf("   %s Could not register convoy prefix: %v\n", style.Dim.Render("⚠"), err)
 	}
 
 	return nil

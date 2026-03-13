@@ -65,11 +65,9 @@ func isTrackedByConvoy(beadID string) string {
 // (for manually-created convoys where the description won't match).
 // Returns convoy ID if found, empty string otherwise.
 func findConvoyByDescription(townRoot, beadID string) string {
-	townBeads := filepath.Join(townRoot, ".beads")
-
-	// Query all open convoys from HQ
+	// Run bd from townRoot — it finds .beads/ and uses routes.jsonl for prefix routing
 	listCmd := exec.Command("bd", "list", "--type=convoy", "--status=open", "--json")
-	listCmd.Dir = townBeads
+	listCmd.Dir = townRoot
 
 	out, err := listCmd.Output()
 	if err != nil {
@@ -97,7 +95,7 @@ func findConvoyByDescription(townRoot, beadID string) string {
 	// This handles the case where cross-rig dep resolution (direction=up) fails
 	// but the convoy does have a tracks dependency on the bead.
 	for _, convoy := range convoys {
-		if convoyTracksBead(townBeads, convoy.ID, beadID) {
+		if convoyTracksBead(townRoot, convoy.ID, beadID) {
 			return convoy.ID
 		}
 	}
@@ -378,9 +376,10 @@ func createAutoConvoy(beadID, beadTitle string, owned bool, mergeStrategy, baseB
 
 	townBeads := filepath.Join(townRoot, ".beads")
 
-	// Generate convoy ID with hq-cv- prefix for visual distinction
-	// The hq-cv- prefix is registered in routes during gt install
-	convoyID := fmt.Sprintf("hq-cv-%s", slingGenerateShortID())
+	// Generate convoy ID with rig prefix (e.g., co-cv-xxxxx) instead of hq-cv-
+	// The rig prefix is extracted from the tracked bead ID and routes.jsonl handles resolution
+	prefix := beads.ExtractPrefix(beadID) // e.g., "co-"
+	convoyID := fmt.Sprintf("%scv-%s", prefix, slingGenerateShortID())
 
 	// Create convoy with title "Work: <issue-title>"
 	convoyTitle := fmt.Sprintf("Work: %s", beadTitle)

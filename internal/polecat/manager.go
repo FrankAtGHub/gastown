@@ -279,6 +279,12 @@ func (m *Manager) CheckDoltServerCapacity() error {
 		return nil // Can't determine town root, skip check
 	}
 
+	// Skip check entirely when dolt is not set up (no .dolt-data directory)
+	doltDataDir := filepath.Join(townRoot, ".dolt-data")
+	if _, err := os.Stat(doltDataDir); os.IsNotExist(err) {
+		return nil
+	}
+
 	hasCapacity, active, err := doltserver.HasConnectionCapacity(townRoot)
 	if err != nil {
 		// Fail closed: if we can't check capacity, the server may be overloaded.
@@ -437,7 +443,9 @@ func (m *Manager) repoBase() (*git.Git, error) {
 	bareRepoPath := filepath.Join(m.rig.Path, ".repo.git")
 	if info, err := os.Stat(bareRepoPath); err == nil && info.IsDir() {
 		// Bare repo exists - use it
-		return git.NewGitWithDir(bareRepoPath, ""), nil
+		// Set workDir to rig path so worktree paths are interpreted correctly
+		// (without this, git interprets relative paths from the bare repo dir)
+		return git.NewGitWithDir(bareRepoPath, m.rig.Path), nil
 	}
 
 	// Fall back to mayor/rig (legacy architecture)

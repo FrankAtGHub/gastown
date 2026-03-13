@@ -363,7 +363,7 @@ func agentBeadToAddress(bead *agentBead) string {
 	// Scan from right for known role markers
 	for i := len(parts) - 1; i >= 1; i-- {
 		switch parts[i] {
-		case constants.RoleWitness, constants.RoleRefinery:
+		case constants.RoleWitness, constants.RoleRefinery, "architect":
 			// Singleton role: rig is everything before the role
 			rig := strings.Join(parts[:i], "-")
 			return rig + "/" + parts[i]

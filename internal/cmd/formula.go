@@ -402,15 +402,15 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	fmt.Printf("%s Executing convoy formula: %s\n\n",
 		style.Bold.Render("🚚"), formulaName)
 
-	// Get town beads directory for convoy creation
+	// Get town root for running bd commands (routes.jsonl handles prefix routing)
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
 	}
-	townBeads := filepath.Join(townRoot, ".beads")
 
-	// Step 1: Create convoy bead
-	convoyID := fmt.Sprintf("hq-cv-%s", generateFormulaShortID())
+	// Step 1: Create convoy bead with rig prefix
+	rigPrefix := beads.GetPrefixForRig(townRoot, targetRig)
+	convoyID := fmt.Sprintf("%s-cv-%s", rigPrefix, generateFormulaShortID())
 	convoyTitle := fmt.Sprintf("%s: %s", formulaName, f.Description)
 	if len(convoyTitle) > 80 {
 		convoyTitle = convoyTitle[:77] + "..."
@@ -440,7 +440,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	}
 
 	createCmd := exec.Command("bd", createArgs...)
-	createCmd.Dir = townBeads
+	createCmd.Dir = townRoot
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {
 		return fmt.Errorf("creating convoy bead: %w", err)
@@ -488,7 +488,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	// Step 2: Create leg beads and track them
 	legBeads := make(map[string]string) // leg.ID -> bead ID
 	for _, leg := range f.Legs {
-		legBeadID := fmt.Sprintf("hq-leg-%s", generateFormulaShortID())
+		legBeadID := fmt.Sprintf("%s-leg-%s", rigPrefix, generateFormulaShortID())
 
 		// Build leg description with prompt if available
 		legDesc := leg.Description
@@ -546,7 +546,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 
 		if err := BdCmd(legArgs...).
 			WithAutoCommit().
-			Dir(townBeads).
+			Dir(townRoot).
 			Stderr(os.Stderr).
 			Run(); err != nil {
 			fmt.Printf("%s Failed to create leg bead for %s: %v\n",
@@ -557,7 +557,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		// Track the leg with the convoy
 		if err := BdCmd("dep", "add", convoyID, legBeadID, "--type=tracks").
 			WithAutoCommit().
-			Dir(townBeads).
+			Dir(townRoot).
 			Run(); err != nil {
 			fmt.Printf("%s Failed to track leg %s: %v\n",
 				style.Dim.Render("Warning:"), leg.ID, err)
@@ -570,7 +570,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	// Step 3: Create synthesis bead if defined
 	var synthesisBeadID string
 	if f.Synthesis != nil {
-		synthesisBeadID = fmt.Sprintf("hq-syn-%s", generateFormulaShortID())
+		synthesisBeadID = fmt.Sprintf("%s-syn-%s", rigPrefix, generateFormulaShortID())
 
 		synDesc := f.Synthesis.Description
 		if synDesc == "" {
@@ -590,7 +590,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 
 		if err := BdCmd(synArgs...).
 			WithAutoCommit().
-			Dir(townBeads).
+			Dir(townRoot).
 			Stderr(os.Stderr).
 			Run(); err != nil {
 			fmt.Printf("%s Failed to create synthesis bead: %v\n",
@@ -599,14 +599,14 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			// Track synthesis with convoy
 			_ = BdCmd("dep", "add", convoyID, synthesisBeadID, "--type=tracks").
 				WithAutoCommit().
-				Dir(townBeads).
+				Dir(townRoot).
 				Run()
 
 			// Add dependencies: synthesis depends on all legs
 			for _, legBeadID := range legBeads {
 				_ = BdCmd("dep", "add", synthesisBeadID, legBeadID).
 					WithAutoCommit().
-					Dir(townBeads).
+					Dir(townRoot).
 					Run()
 			}
 
@@ -650,7 +650,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 			// Add comment to bead about failure
 			commentArgs := []string{"comment", legBeadID, fmt.Sprintf("Failed to sling: %v", err)}
 			commentCmd := exec.Command("bd", commentArgs...)
-			commentCmd.Dir = townBeads
+			commentCmd.Dir = townRoot
 			_ = commentCmd.Run()
 			continue
 		}

@@ -119,6 +119,12 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 		env["BD_ACTOR"] = fmt.Sprintf("%s/crew/%s", cfg.Rig, cfg.AgentName)
 		env["GIT_AUTHOR_NAME"] = cfg.AgentName
 
+	case "architect":
+		env["GT_ROLE"] = fmt.Sprintf("%s/architect", cfg.Rig)
+		env["GT_RIG"] = cfg.Rig
+		env["BD_ACTOR"] = fmt.Sprintf("%s/architect", cfg.Rig)
+		env["GIT_AUTHOR_NAME"] = fmt.Sprintf("%s/architect", cfg.Rig)
+
 	case "dog":
 		// Dogs are town-level workers with role_agents key "dog".
 		// GT_ROLE must be set so startup command resolution can honor role_agents.dog.

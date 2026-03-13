@@ -18,7 +18,7 @@ func TestRoutesCheck_MissingTownRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create routes.jsonl with only a rig route (no hq- or hq-cv- routes)
+		// Create routes.jsonl with only a rig route (no hq- route)
 		routesPath := filepath.Join(beadsDir, "routes.jsonl")
 		routesContent := `{"prefix": "gt-", "path": "gastown/mayor/rig"}
 `
@@ -53,10 +53,9 @@ func TestRoutesCheck_MissingTownRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create routes.jsonl with both hq- and hq-cv- routes
+		// Create routes.jsonl with hq- route (hq-cv- no longer required)
 		routesPath := filepath.Join(beadsDir, "routes.jsonl")
 		routesContent := `{"prefix": "hq-", "path": "."}
-{"prefix": "hq-cv-", "path": "."}
 `
 		if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
 			t.Fatal(err)
@@ -106,7 +105,7 @@ func TestRoutesCheck_FixRestoresTownRoute(t *testing.T) {
 			t.Fatalf("Fix failed: %v", err)
 		}
 
-		// Verify routes.jsonl now contains both hq- and hq-cv- routes
+		// Verify routes.jsonl now contains hq- route (hq-cv- no longer added)
 		content, err := os.ReadFile(routesPath)
 		if err != nil {
 			t.Fatalf("Failed to read routes.jsonl: %v", err)
@@ -118,7 +117,6 @@ func TestRoutesCheck_FixRestoresTownRoute(t *testing.T) {
 
 		contentStr := string(content)
 		if contentStr != `{"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 ` {
 			t.Errorf("unexpected routes.jsonl content: %s", contentStr)
 		}
@@ -145,7 +143,7 @@ func TestRoutesCheck_FixRestoresTownRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create routes.jsonl with only a rig route (no hq- or hq-cv- routes)
+		// Create routes.jsonl with only a rig route (no hq- route)
 		routesPath := filepath.Join(beadsDir, "routes.jsonl")
 		routesContent := `{"prefix": "my-", "path": "myrig/mayor/rig"}
 `
@@ -166,17 +164,15 @@ func TestRoutesCheck_FixRestoresTownRoute(t *testing.T) {
 			t.Fatalf("Fix failed: %v", err)
 		}
 
-		// Verify routes.jsonl now contains all routes
+		// Verify routes.jsonl now contains the rig route plus hq-
 		content, err := os.ReadFile(routesPath)
 		if err != nil {
 			t.Fatalf("Failed to read routes.jsonl: %v", err)
 		}
 
 		contentStr := string(content)
-		// Should have the original rig route plus both hq- and hq-cv- routes
 		if contentStr != `{"prefix":"my-","path":"myrig/mayor/rig"}
 {"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 ` {
 			t.Errorf("unexpected routes.jsonl content: %s", contentStr)
 		}
@@ -191,10 +187,9 @@ func TestRoutesCheck_FixRestoresTownRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create routes.jsonl with both hq- and hq-cv- routes already present
+		// Create routes.jsonl with hq- route already present
 		routesPath := filepath.Join(beadsDir, "routes.jsonl")
 		originalContent := `{"prefix": "hq-", "path": "."}
-{"prefix": "hq-cv-", "path": "."}
 `
 		if err := os.WriteFile(routesPath, []byte(originalContent), 0644); err != nil {
 			t.Fatal(err)
@@ -264,7 +259,6 @@ func TestRoutesCheck_DirectLayoutRig(t *testing.T) {
 		// Create routes.jsonl with the direct-layout path (myrig, not myrig/mayor/rig)
 		routesPath := filepath.Join(beadsDir, "routes.jsonl")
 		routesContent := `{"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 {"prefix":"mr-","path":"myrig"}
 `
 		if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
@@ -333,7 +327,6 @@ func TestRoutesCheck_DirectLayoutRig(t *testing.T) {
 		contentStr := string(content)
 		// Should use "myrig" path (direct layout), not "myrig/mayor/rig"
 		expected := `{"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 {"prefix":"mr-","path":"myrig"}
 `
 		if contentStr != expected {
@@ -451,7 +444,6 @@ func TestRoutesCheck_SuboptimalRoutes(t *testing.T) {
 
 		// Legacy route: prefix cr- points to rig root "crom" (suboptimal)
 		routesContent := `{"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 {"prefix":"cr-","path":"crom"}
 `
 		if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(routesContent), 0644); err != nil {
@@ -558,7 +550,6 @@ func TestRoutesCheck_SuboptimalRoutes(t *testing.T) {
 
 		// Route pointing to rig root
 		routesContent := `{"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 {"prefix":"cr-","path":"crom"}
 `
 		if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(routesContent), 0644); err != nil {
@@ -669,7 +660,7 @@ func TestRoutesCheck_CorruptedRoutesJsonl(t *testing.T) {
 			t.Fatalf("Fix failed: %v", err)
 		}
 
-		// Verify routes.jsonl now contains both hq- and hq-cv- routes
+		// Verify routes.jsonl now contains hq- route
 		content, err := os.ReadFile(routesPath)
 		if err != nil {
 			t.Fatalf("Failed to read routes.jsonl: %v", err)
@@ -677,7 +668,6 @@ func TestRoutesCheck_CorruptedRoutesJsonl(t *testing.T) {
 
 		contentStr := string(content)
 		if contentStr != `{"prefix":"hq-","path":"."}
-{"prefix":"hq-cv-","path":"."}
 ` {
 			t.Errorf("unexpected routes.jsonl content after fix: %s", contentStr)
 		}

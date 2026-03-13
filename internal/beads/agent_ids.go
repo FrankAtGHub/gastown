@@ -47,6 +47,7 @@ var ValidAgentRoles = []string{
 	"dog",                  // Town-level with name: gt-dog-<name>
 	constants.RoleWitness,  // Per-rig: gt-<rig>-witness
 	constants.RoleRefinery, // Per-rig: gt-<rig>-refinery
+	"architect",            // Per-rig: gt-<rig>-architect
 	constants.RoleCrew,    // Per-rig with name: gt-<rig>-crew-<name>
 	constants.RolePolecat, // Per-rig with name: gt-<rig>-polecat-<name>
 }
@@ -58,7 +59,7 @@ var TownLevelRoles = []string{constants.RoleMayor, constants.RoleDeacon}
 var TownLevelNamedRoles = []string{"dog"}
 
 // RigLevelRoles are agent roles that have a rig but no name.
-var RigLevelRoles = []string{constants.RoleWitness, constants.RoleRefinery}
+var RigLevelRoles = []string{constants.RoleWitness, constants.RoleRefinery, "architect"}
 
 // NamedRoles are agent roles that include a worker name (rig-level).
 var NamedRoles = []string{constants.RoleCrew, constants.RolePolecat}
