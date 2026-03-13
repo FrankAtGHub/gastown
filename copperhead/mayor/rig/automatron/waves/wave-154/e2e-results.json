@@ -1,0 +1,26 @@
+{
+  "wave": 154,
+  "timestamp": "2026-03-08T09:25:00.000Z",
+  "target": "https://beta.numeruspro.com",
+  "headless": true,
+  "total": 3,
+  "passed": 3,
+  "failed": 0,
+  "flows": [
+    {
+      "name": "api-health",
+      "passed": true,
+      "message": "API healthy — no regression from navigator changes"
+    },
+    {
+      "name": "login-works",
+      "passed": true,
+      "message": "Admin login successful"
+    },
+    {
+      "name": "dashboard-renders",
+      "passed": true,
+      "message": "Dashboard renders with content — web app not broken"
+    }
+  ]
+}

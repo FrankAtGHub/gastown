@@ -1,0 +1,15 @@
+{
+  "wave": 153,
+  "title": "Theme Standardizer Phase 2 — Web App Integration",
+  "scope": "Create Tailwind preset from shared tokens, CSS variables, wire into web app",
+  "files": [
+    "packages/theme/src/tailwind-preset.ts",
+    "packages/theme/src/css-variables.ts",
+    "packages/theme/src/index.ts",
+    "packages/theme/package.json",
+    "apps/web/tailwind.config.cjs",
+    "apps/web/src/input.css"
+  ],
+  "tests": ["tests/wave-153-theme-web.test.js"],
+  "dependencies": ["wave-150"]
+}

@@ -1,0 +1,16 @@
+{
+  "wave": 155,
+  "title": "Mobile Dark Theme Remaining Hardcoded Colors",
+  "description": "Replace all hardcoded hex color values in 4 mobile screens with theme tokens from @field-ops/theme useThemeStyles() hook",
+  "files": [
+    "apps/mobile/src/screens/EndOfDayScreen.tsx",
+    "apps/mobile/src/screens/LoginScreen.tsx",
+    "apps/mobile/src/screens/CrewClockInScreen.tsx",
+    "apps/mobile/src/screens/PhotoCaptureScreen.native.tsx"
+  ],
+  "test_files": [
+    "automatron/waves/wave-155/wave-155-tests.mjs"
+  ],
+  "depends_on": [154],
+  "phase": "implement"
+}

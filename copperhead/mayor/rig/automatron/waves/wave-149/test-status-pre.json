@@ -1,0 +1,27 @@
+{
+  "wave": 149,
+  "timestamp": "2026-03-08T06:18:20.766Z",
+  "mode": "pre",
+  "total": 3,
+  "passed": 0,
+  "failed": 3,
+  "allPassed": false,
+  "results": [
+    {
+      "name": "wave-149-smoke",
+      "passed": false,
+      "message": "No checks implemented yet — QA must add wave-specific assertions before this flow can pass."
+    },
+    {
+      "name": "wave-149-theme",
+      "passed": false,
+      "message": "24 issues: PersonalInfoScreen.tsx: missing useThemeStyles import; PersonalInfoScreen.tsx: useThemeStyles not called; PersonalInfoScreen.tsx: 21 hardcoded colors remain; PersonalInfoScreen.tsx: only 0 colors.* refs (expected ≥3); MyVehicleScreen.tsx: missing useThemeStyles import; MyVehicleScreen.tsx: useThemeStyles not called; MyVehicleScreen.tsx: 17 hardcoded colors remain; MyVehicleScreen.tsx: only 0 colors.* refs (expected ≥3); TimeEntriesListScreen.tsx: missing useThemeStyles import; TimeEntriesListScreen.tsx: useThemeStyles not called; TimeEntriesListScreen.tsx: 16 hardcoded colors remain; TimeEntriesListScreen.tsx: only 0 colors.* refs (expected ≥3); DocumentsScreen.tsx: missing useThemeStyles import; DocumentsScreen.tsx: useThemeStyles not called; DocumentsScreen.tsx: 21 hardcoded colors remain; DocumentsScreen.tsx: only 0 colors.* refs (expected ≥3); NotificationsScreen.tsx: missing useThemeStyles import; NotificationsScreen.tsx: useThemeStyles not called; NotificationsScreen.tsx: 15 hardcoded colors remain; NotificationsScreen.tsx: only 0 colors.* refs (expected ≥3); HelpScreen.tsx: missing useThemeStyles import; HelpScreen.tsx: useThemeStyles not called; HelpScreen.tsx: 18 hardcoded colors remain; HelpScreen.tsx: only 0 colors.* refs (expected ≥3)"
+    },
+    {
+      "name": "wave-149-theme.test.js",
+      "passed": false,
+      "tests": 0,
+      "output": "spawnSync /bin/sh ENOENT"
+    }
+  ]
+}

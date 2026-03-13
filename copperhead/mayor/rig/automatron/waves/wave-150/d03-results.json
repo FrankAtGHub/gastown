@@ -1,0 +1,17 @@
+{
+  "wave": 150,
+  "timestamp": "2026-03-08T08:02:00.000Z",
+  "target": "https://beta.numeruspro.com",
+  "total": 63,
+  "passed": 63,
+  "failed": 0,
+  "duration_seconds": 52.0,
+  "passing_gates": {
+    "gate1_api_health": 5,
+    "gate2_navigation": 25,
+    "gate3_page_load": 20,
+    "gate4_data_existence": 8,
+    "gate5_tdd_compliance": 5
+  },
+  "failures": []
+}

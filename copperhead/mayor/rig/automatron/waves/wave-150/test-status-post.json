@@ -1,0 +1,22 @@
+{
+  "wave": 150,
+  "timestamp": "2026-03-08T07:58:38.905Z",
+  "mode": "post",
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "wave-150-tokens.test.js",
+      "passed": true,
+      "tests": 20,
+      "output": "Wave 150 — Theme Token Extraction Tests\n\nPackage Structure:\n  ✅ packages/theme/package.json exists\n  ✅ packages/theme/package.json has correct name\n  ✅ packages/theme/tsconfig.json exists\n  ✅ packages/theme/src/tokens.ts exists\n  ✅ packages/theme/src/index.ts exists\n\nToken Content:\n  ✅ tokens.ts exports ThemeTokens interface\n  ✅ tokens.ts exports lightTokens\n  ✅ tokens.ts exports darkTokens\n  ✅ tokens.ts exports statusTokens\n  ✅ tokens.ts exports statusTokensDark\n  ✅ tokens.ts exports getThemeTokens function\n  ✅ tokens.ts exports getStatusTokens function\n  ✅ tokens.ts has all background tokens\n  ✅ tokens.ts has all text tokens\n  ✅ tokens.ts has all status tokens\n\nMobile Integration:\n  ✅ colors.ts imports from @field-ops/theme\n  ✅ colors.ts still exports ThemeColors type\n  ✅ colors.ts still exports getThemeColors function\n  ✅ colors.ts still exports getStatusColors function\n\nRegression Check:\n  ✅ useThemeStyles.ts unchanged — still imports from colors\n\n20/20 tests passed"
+    },
+    {
+      "name": "wave-150-build",
+      "passed": true,
+      "message": "All 5 build checks passed"
+    }
+  ]
+}

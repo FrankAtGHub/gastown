@@ -6,18 +6,31 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/testutil"
 )
 
+// hookTestCounter generates unique prefixes for each hook test to isolate
+// Dolt databases on the shared server.
+var hookTestCounter atomic.Int32
+
 // setupHookTestTown creates a minimal Gas Town with a polecat for testing hooks.
-// Returns townRoot and the path to the polecat's worktree.
-func setupHookTestTown(t *testing.T) (townRoot, polecatDir string) {
+// Uses requireDoltServer for ephemeral port and unique prefixes per test to
+// isolate Dolt databases.
+// Returns townRoot, the path to the polecat's worktree, and the beads prefix.
+func setupHookTestTown(t *testing.T) (townRoot, polecatDir, rigPrefix string) {
 	t.Helper()
+	requireDoltServer(t)
+
+	n := hookTestCounter.Add(1)
+	rigPrefix = fmt.Sprintf("ht%d", n)
 
 	townRoot = t.TempDir()
 
@@ -29,8 +42,8 @@ func setupHookTestTown(t *testing.T) (townRoot, polecatDir string) {
 
 	// Create routes.jsonl
 	routes := []beads.Route{
-		{Prefix: "hq-", Path: "."},                     // Town-level beads
-		{Prefix: "gt-", Path: "gastown/mayor/rig"},     // Gastown rig
+		{Prefix: "hq-", Path: "."},                             // Town-level beads
+		{Prefix: rigPrefix + "-", Path: "gastown/mayor/rig"},   // Gastown rig
 	}
 	if err := beads.WriteRoutes(townBeadsDir, routes); err != nil {
 		t.Fatalf("write routes: %v", err)
@@ -47,7 +60,7 @@ func setupHookTestTown(t *testing.T) (townRoot, polecatDir string) {
 	if err := os.MkdirAll(gasBeadsDir, 0755); err != nil {
 		t.Fatalf("mkdir gastown .beads: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(gasBeadsDir, "config.yaml"), []byte("prefix: gt\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(gasBeadsDir, "config.yaml"), []byte("prefix: "+rigPrefix+"\n"), 0644); err != nil {
 		t.Fatalf("write gastown config: %v", err)
 	}
 
@@ -67,14 +80,15 @@ func setupHookTestTown(t *testing.T) (townRoot, polecatDir string) {
 		t.Fatalf("write redirect: %v", err)
 	}
 
-	return townRoot, polecatDir
+	return townRoot, polecatDir, rigPrefix
 }
 
-// initBeadsDB initializes the beads database by running bd init.
+// initBeadsDB initializes the beads database by running bd init on the test server.
 func initBeadsDB(t *testing.T, dir string) {
 	t.Helper()
+	testutil.RequireDoltContainer(t)
 
-	cmd := exec.Command("bd", "--no-daemon", "init")
+	cmd := exec.Command("bd", "init", "--server-port", testutil.DoltContainerPort())
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bd init failed: %v\n%s", err, output)
@@ -88,19 +102,19 @@ func TestHookSlot_BasicHook(t *testing.T) {
 		t.Skip("bd not installed, skipping test")
 	}
 
-	townRoot, polecatDir := setupHookTestTown(t)
+	townRoot, polecatDir, rigPrefix := setupHookTestTown(t)
 	_ = townRoot // Not used directly but shows test context
 
 	// Initialize beads in the rig
 	rigDir := filepath.Join(polecatDir, "..", "..", "mayor", "rig")
-	initBeadsDB(t, rigDir)
+	initBeadsDBWithPrefix(t, rigDir, rigPrefix)
 
 	b := beads.New(rigDir)
 
 	// Create a test bead
 	issue, err := b.Create(beads.CreateOptions{
 		Title:    "Test task for hooking",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -143,11 +157,11 @@ func TestHookSlot_Singleton(t *testing.T) {
 		t.Skip("bd not installed, skipping test")
 	}
 
-	townRoot, polecatDir := setupHookTestTown(t)
+	townRoot, polecatDir, rigPrefix := setupHookTestTown(t)
 	_ = townRoot
 
 	rigDir := filepath.Join(polecatDir, "..", "..", "mayor", "rig")
-	initBeadsDB(t, rigDir)
+	initBeadsDBWithPrefix(t, rigDir, rigPrefix)
 
 	b := beads.New(rigDir)
 	agentID := "gastown/polecats/toast"
@@ -156,7 +170,7 @@ func TestHookSlot_Singleton(t *testing.T) {
 	// Create and hook first bead
 	issue1, err := b.Create(beads.CreateOptions{
 		Title:    "First task",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -173,7 +187,7 @@ func TestHookSlot_Singleton(t *testing.T) {
 	// Create second bead
 	issue2, err := b.Create(beads.CreateOptions{
 		Title:    "Second task",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -217,11 +231,11 @@ func TestHookSlot_Unhook(t *testing.T) {
 		t.Skip("bd not installed, skipping test")
 	}
 
-	townRoot, polecatDir := setupHookTestTown(t)
+	townRoot, polecatDir, rigPrefix := setupHookTestTown(t)
 	_ = townRoot
 
 	rigDir := filepath.Join(polecatDir, "..", "..", "mayor", "rig")
-	initBeadsDB(t, rigDir)
+	initBeadsDBWithPrefix(t, rigDir, rigPrefix)
 
 	b := beads.New(rigDir)
 	agentID := "gastown/polecats/toast"
@@ -229,7 +243,7 @@ func TestHookSlot_Unhook(t *testing.T) {
 	// Create and hook a bead
 	issue, err := b.Create(beads.CreateOptions{
 		Title:    "Task to unhook",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -273,7 +287,7 @@ func TestHookSlot_DifferentAgents(t *testing.T) {
 		t.Skip("bd not installed, skipping test")
 	}
 
-	townRoot, polecatDir := setupHookTestTown(t)
+	townRoot, polecatDir, rigPrefix := setupHookTestTown(t)
 
 	// Create second polecat directory
 	polecat2Dir := filepath.Join(townRoot, "gastown", "polecats", "nux")
@@ -282,7 +296,7 @@ func TestHookSlot_DifferentAgents(t *testing.T) {
 	}
 
 	rigDir := filepath.Join(polecatDir, "..", "..", "mayor", "rig")
-	initBeadsDB(t, rigDir)
+	initBeadsDBWithPrefix(t, rigDir, rigPrefix)
 
 	b := beads.New(rigDir)
 	agent1 := "gastown/polecats/toast"
@@ -292,7 +306,7 @@ func TestHookSlot_DifferentAgents(t *testing.T) {
 	// Create and hook bead to first agent
 	issue1, err := b.Create(beads.CreateOptions{
 		Title:    "Toast's task",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -309,7 +323,7 @@ func TestHookSlot_DifferentAgents(t *testing.T) {
 	// Create and hook bead to second agent
 	issue2, err := b.Create(beads.CreateOptions{
 		Title:    "Nux's task",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -364,11 +378,11 @@ func TestHookSlot_HookPersistence(t *testing.T) {
 		t.Skip("bd not installed, skipping test")
 	}
 
-	townRoot, polecatDir := setupHookTestTown(t)
+	townRoot, polecatDir, rigPrefix := setupHookTestTown(t)
 	_ = townRoot
 
 	rigDir := filepath.Join(polecatDir, "..", "..", "mayor", "rig")
-	initBeadsDB(t, rigDir)
+	initBeadsDBWithPrefix(t, rigDir, rigPrefix)
 
 	agentID := "gastown/polecats/toast"
 	status := beads.StatusHooked
@@ -377,7 +391,7 @@ func TestHookSlot_HookPersistence(t *testing.T) {
 	b1 := beads.New(rigDir)
 	issue, err := b1.Create(beads.CreateOptions{
 		Title:    "Persistent task",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {
@@ -419,11 +433,11 @@ func TestHookSlot_StatusTransitions(t *testing.T) {
 		t.Skip("bd not installed, skipping test")
 	}
 
-	townRoot, polecatDir := setupHookTestTown(t)
+	townRoot, polecatDir, rigPrefix := setupHookTestTown(t)
 	_ = townRoot
 
 	rigDir := filepath.Join(polecatDir, "..", "..", "mayor", "rig")
-	initBeadsDB(t, rigDir)
+	initBeadsDBWithPrefix(t, rigDir, rigPrefix)
 
 	b := beads.New(rigDir)
 	agentID := "gastown/polecats/toast"
@@ -431,7 +445,7 @@ func TestHookSlot_StatusTransitions(t *testing.T) {
 	// Create a bead
 	issue, err := b.Create(beads.CreateOptions{
 		Title:    "Status transition test",
-		Type:     "task",
+		Label:    "gt:task",
 		Priority: 2,
 	})
 	if err != nil {

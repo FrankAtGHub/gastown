@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-03-08T16:58:33.928Z",
+  "services": {
+    "fieldops-mobile": "fieldops-mobile:w156",
+    "fieldops-tech-web": "fieldops-tech-web:w156",
+    "fieldops-docs": "fieldops-docs:w156",
+    "fieldops-api": "fieldops-api:w152b (unchanged)",
+    "fieldops-web": "fieldops-web:w153 (unchanged)"
+  },
+  "total": 9,
+  "passed": 9,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "API login successful",
+      "status": "pass"
+    },
+    {
+      "name": "Dashboard renders",
+      "status": "pass"
+    },
+    {
+      "name": "Work orders endpoint healthy",
+      "status": "pass"
+    },
+    {
+      "name": "Clock-in verify endpoint accessible",
+      "status": "pass"
+    },
+    {
+      "name": "Tech-web renders",
+      "status": "pass"
+    },
+    {
+      "name": "Tech-web /clock-in/ page accessible",
+      "status": "pass"
+    },
+    {
+      "name": "Docs site renders",
+      "status": "pass"
+    },
+    {
+      "name": "Docs has --fo-primary CSS variable",
+      "status": "pass"
+    },
+    {
+      "name": "Tech-web has React app root",
+      "status": "pass"
+    }
+  ],
+  "screenshots": [
+    "dashboard.png",
+    "docs-home.png",
+    "tech-web-clockin.png",
+    "tech-web-home.png"
+  ]
+}

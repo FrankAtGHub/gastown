@@ -2,11 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"sort"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 // townCycleSession is the --session flag for town next/prev commands.
@@ -22,18 +19,13 @@ func getTownLevelSessions() []string {
 }
 
 // isTownLevelSession checks if the given session name is a town-level session.
+// Town-level sessions (Mayor, Deacon) use the "hq-" prefix, so we can identify
+// them by name alone without requiring workspace context. This is critical for
+// tmux run-shell which may execute from outside the workspace directory.
 func isTownLevelSession(sessionName string) bool {
-	townRoot, err := workspace.FindFromCwd()
-	if err != nil || townRoot == "" {
-		return false
-	}
-	townName, err := workspace.GetTownName(townRoot)
-	if err != nil {
-		return false
-	}
-	mayorSession := getMayorSessionName()
-	deaconSession := getDeaconSessionName()
-	_ = townName // used for session name generation
+	// Town-level sessions are identified by their fixed names
+	mayorSession := getMayorSessionName()  // "hq-mayor"
+	deaconSession := getDeaconSessionName() // "hq-deacon"
 	return sessionName == mayorSession || sessionName == deaconSession
 }
 
@@ -82,96 +74,43 @@ town-level session (Mayor or Deacon).`,
 // direction: 1 for next, -1 for previous
 // sessionOverride: if non-empty, use this instead of detecting current session
 func cycleTownSession(direction int, sessionOverride string) error {
-	var currentSession string
-	var err error
-
-	if sessionOverride != "" {
-		currentSession = sessionOverride
-	} else {
-		currentSession, err = getCurrentTmuxSession()
-		if err != nil {
-			return fmt.Errorf("not in a tmux session: %w", err)
-		}
-		if currentSession == "" {
-			return fmt.Errorf("not in a tmux session")
-		}
+	currentSession, err := resolveCurrentSession(sessionOverride)
+	if err != nil {
+		return fmt.Errorf("not in a tmux session: %w", err)
+	}
+	if currentSession == "" {
+		return fmt.Errorf("not in a tmux session")
 	}
 
-	// Check if current session is a town-level session
 	if !isTownLevelSession(currentSession) {
-		// Not a town session - no cycling, just stay put
 		return nil
 	}
 
-	// Find running town sessions
 	sessions, err := findRunningTownSessions()
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
-	if len(sessions) == 0 {
-		return fmt.Errorf("no town sessions found")
-	}
-
-	// Sort for consistent ordering
-	sort.Strings(sessions)
-
-	// Find current position
-	currentIdx := -1
-	for i, s := range sessions {
-		if s == currentSession {
-			currentIdx = i
-			break
-		}
-	}
-
-	if currentIdx == -1 {
-		// Current session not in list (shouldn't happen)
-		return fmt.Errorf("current session not found in town session list")
-	}
-
-	// Calculate target index (with wrapping)
-	targetIdx := (currentIdx + direction + len(sessions)) % len(sessions)
-
-	if targetIdx == currentIdx {
-		// Only one session, nothing to switch to
-		return nil
-	}
-
-	targetSession := sessions[targetIdx]
-
-	// Switch to target session
-	cmd := exec.Command("tmux", "switch-client", "-t", targetSession)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("switching to %s: %w", targetSession, err)
-	}
-
-	return nil
+	return cycleInGroup(direction, currentSession, sessions)
 }
 
 // findRunningTownSessions returns a list of currently running town-level sessions.
 func findRunningTownSessions() ([]string, error) {
-	// Get all tmux sessions
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	allSessions, err := listTmuxSessions()
 	if err != nil {
 		return nil, fmt.Errorf("listing tmux sessions: %w", err)
 	}
 
-	// Get town-level session names
 	townLevelSessions := getTownLevelSessions()
 	if townLevelSessions == nil {
 		return nil, fmt.Errorf("cannot determine town-level sessions")
 	}
 
 	var running []string
-	for _, line := range splitLines(string(out)) {
-		if line == "" {
-			continue
-		}
-		// Check if this is a town-level session
+	for _, s := range allSessions {
 		for _, townSession := range townLevelSessions {
-			if line == townSession {
-				running = append(running, line)
+			if s == townSession {
+				running = append(running, s)
 				break
 			}
 		}

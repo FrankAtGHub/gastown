@@ -16,8 +16,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"github.com/steveyegge/gastown/internal/tmux"
 )
 
 // Common errors
@@ -57,8 +58,25 @@ func New(workerDir string) *Lock {
 // Acquire attempts to acquire the lock for this worker.
 // Returns ErrLocked if another live process holds the lock.
 // Automatically cleans up stale locks.
+//
+// Uses OS-level advisory locking (flock) to prevent TOCTOU races
+// where two processes could both see no lock and both write one.
 func (l *Lock) Acquire(sessionID string) error {
-	// Check for existing lock
+	// Ensure .runtime directory exists before flock
+	dir := filepath.Dir(l.lockPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating lock directory: %w", err)
+	}
+
+	// Acquire advisory flock to serialize concurrent Acquire() calls.
+	// The flock file is separate from the lock file itself.
+	unlock, err := flockAcquire(l.lockPath + ".flock")
+	if err != nil {
+		return fmt.Errorf("acquiring coordination lock: %w", err)
+	}
+	defer unlock()
+
+	// Check for existing lock (now safe from races)
 	info, err := l.Read()
 	if err == nil {
 		// Lock exists - check if stale
@@ -186,28 +204,20 @@ func (l *Lock) write(sessionID string) error {
 		return fmt.Errorf("marshaling lock info: %w", err)
 	}
 
-	if err := os.WriteFile(l.lockPath, data, 0644); err != nil { //nolint:gosec // G306: lock files are non-sensitive operational data
-		return fmt.Errorf("writing lock file: %w", err)
+	// Write to temp file then rename atomically to prevent partial lock files
+	// on crash. os.Rename is atomic on POSIX when src and dst are on the same
+	// filesystem (guaranteed here — same directory).
+	tmpPath := l.lockPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil { //nolint:gosec // G306: lock files are non-sensitive operational data
+		return fmt.Errorf("writing temp lock file: %w", err)
+	}
+	if err := os.Rename(tmpPath, l.lockPath); err != nil {
+		// Clean up temp file on rename failure
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("renaming lock file: %w", err)
 	}
 
 	return nil
-}
-
-// processExists checks if a process with the given PID exists and is alive.
-func processExists(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	// On Unix, sending signal 0 checks if process exists without affecting it
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	// Try to send signal 0 - this will fail if process doesn't exist
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
 }
 
 // FindAllLocks scans a directory tree for agent.lock files.
@@ -282,7 +292,16 @@ func CleanStaleLocks(root string) (int, error) {
 func getActiveTmuxSessions() []string {
 	// Get both session name and ID to handle different lock formats
 	// Format: "session_name:session_id" e.g., "gt-beads-crew-dave:$55"
-	cmd := execCommand("tmux", "list-sessions", "-F", "#{session_name}:#{session_id}")
+	// Use the town's tmux socket so we query the correct server.
+	// Without -L, bare "tmux" queries the "default" socket, which misses
+	// all sessions on the per-town socket (e.g., "gt") and causes
+	// CleanStaleLocks to incorrectly remove locks for active sessions.
+	args := []string{}
+	if sock := tmux.GetDefaultSocket(); sock != "" {
+		args = append(args, "-L", sock)
+	}
+	args = append(args, "list-sessions", "-F", "#{session_name}:#{session_id}")
+	cmd := execCommand("tmux", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil // tmux not running or not installed

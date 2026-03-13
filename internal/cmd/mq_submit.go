@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
@@ -24,26 +26,48 @@ type branchInfo struct {
 	Worker string // Worker name (polecat name)
 }
 
+// issuePattern matches issue IDs in branch names (e.g., "gt-xyz" or "gt-abc.1")
+var issuePattern = regexp.MustCompile(`([a-z]+-[a-z0-9]+(?:\.[0-9]+)?)`)
+
 // parseBranchName extracts issue ID and worker from a branch name.
 // Supports formats:
 //   - polecat/<worker>/<issue>  → issue=<issue>, worker=<worker>
+//   - polecat/<worker>-<timestamp>  → issue="", worker=<worker> (modern polecat branches)
 //   - <issue>                   → issue=<issue>, worker=""
 func parseBranchName(branch string) branchInfo {
 	info := branchInfo{Branch: branch}
 
-	// Try polecat/<worker>/<issue> format
-	if strings.HasPrefix(branch, "polecat/") {
+	// Try polecat/<worker>/<issue> or polecat/<worker>/<issue>@<timestamp> format
+	if strings.HasPrefix(branch, constants.BranchPolecatPrefix) {
 		parts := strings.SplitN(branch, "/", 3)
 		if len(parts) == 3 {
 			info.Worker = parts[1]
-			info.Issue = parts[2]
+			// Strip @timestamp suffix if present (e.g., "gt-abc@mk123" -> "gt-abc")
+			issue := parts[2]
+			if atIdx := strings.Index(issue, "@"); atIdx > 0 {
+				issue = issue[:atIdx]
+			}
+			info.Issue = issue
+			return info
+		}
+		// Modern polecat branch format: polecat/<worker>-<timestamp>
+		// The second part is "worker-timestamp", not an issue ID.
+		// Don't try to extract an issue ID - gt done will use hook_bead fallback.
+		if len(parts) == 2 {
+			// Extract worker name from "worker-timestamp" format
+			workerPart := parts[1]
+			if dashIdx := strings.LastIndex(workerPart, "-"); dashIdx > 0 {
+				info.Worker = workerPart[:dashIdx]
+			} else {
+				info.Worker = workerPart
+			}
+			// Explicitly don't set info.Issue - let hook_bead fallback handle it
 			return info
 		}
 	}
 
 	// Try to find an issue ID pattern in the branch name
 	// Common patterns: prefix-xxx, prefix-xxx.n (subtask)
-	issuePattern := regexp.MustCompile(`([a-z]+-[a-z0-9]+(?:\.[0-9]+)?)`)
 	if matches := issuePattern.FindStringSubmatch(branch); len(matches) > 1 {
 		info.Issue = matches[1]
 	}
@@ -69,6 +93,36 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
+
+	// When gt is invoked via shell alias (cd ~/gt && gt), cwd is the town
+	// root, not the polecat's worktree. Reconstruct actual path.
+	if cwd == townRoot {
+		// Gate polecat cwd switch on GT_ROLE: coordinators may have stale GT_POLECAT.
+		isPolecat := false
+		if role := os.Getenv("GT_ROLE"); role != "" {
+			parsedRole, _, _ := parseRoleString(role)
+			isPolecat = parsedRole == RolePolecat
+		} else {
+			isPolecat = os.Getenv("GT_POLECAT") != ""
+		}
+		if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" && rigName != "" && isPolecat {
+			polecatClone := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
+			if _, err := os.Stat(polecatClone); err == nil {
+				cwd = polecatClone
+			} else {
+				polecatClone = filepath.Join(townRoot, rigName, "polecats", polecatName)
+				if _, err := os.Stat(filepath.Join(polecatClone, ".git")); err == nil {
+					cwd = polecatClone
+				}
+			}
+		} else if crewName := os.Getenv("GT_CREW"); crewName != "" && rigName != "" {
+			crewClone := filepath.Join(townRoot, rigName, "crew", crewName)
+			if _, err := os.Stat(crewClone); err == nil {
+				cwd = crewClone
+			}
+		}
+	}
+
 	g := git.NewGit(cwd)
 
 	// Get current branch
@@ -110,16 +164,26 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	// Determine target branch
 	target := defaultBranch
 	if mqSubmitEpic != "" {
-		// Explicit --epic flag takes precedence
-		target = "integration/" + mqSubmitEpic
+		// Explicit --epic flag: read stored branch name, fall back to template
+		rigPath := filepath.Join(townRoot, rigName)
+		target = resolveIntegrationBranchName(bd, rigPath, mqSubmitEpic)
 	} else {
 		// Auto-detect: check if source issue has a parent epic with an integration branch
-		autoTarget, err := detectIntegrationBranch(bd, g, issueID)
-		if err != nil {
-			// Non-fatal: log and continue with default branch as target
-			fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(note: %v)", err)))
-		} else if autoTarget != "" {
-			target = autoTarget
+		// Only if refinery integration branch auto-targeting is enabled
+		refineryEnabled := true
+		rigPath := filepath.Join(townRoot, rigName)
+		settingsPath := filepath.Join(rigPath, "settings", "config.json")
+		if settings, err := config.LoadRigSettings(settingsPath); err == nil && settings.MergeQueue != nil {
+			refineryEnabled = settings.MergeQueue.IsRefineryIntegrationEnabled()
+		}
+		if refineryEnabled {
+			autoTarget, err := beads.DetectIntegrationBranch(bd, g, issueID)
+			if err != nil {
+				// Non-fatal: log and continue with default branch as target
+				fmt.Printf("  %s\n", style.Dim.Render(fmt.Sprintf("(note: %v)", err)))
+			} else if autoTarget != "" {
+				target = autoTarget
+			}
 		}
 	}
 
@@ -146,15 +210,32 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		description += fmt.Sprintf("\nworker: %s", worker)
 	}
 
-	// Create MR bead (ephemeral wisp - will be cleaned up after merge)
-	mrIssue, err := bd.Create(beads.CreateOptions{
-		Title:       title,
-		Type:        "merge-request",
-		Priority:    priority,
-		Description: description,
-	})
+	// Check if MR bead already exists for this branch (idempotency)
+	var mrIssue *beads.Issue
+	existingMR, err := bd.FindMRForBranch(branch)
 	if err != nil {
-		return fmt.Errorf("creating merge request bead: %w", err)
+		style.PrintWarning("could not check for existing MR: %v", err)
+		// FindMRForBranch failed — fall through to create a new MR
+	}
+
+	if existingMR != nil {
+		mrIssue = existingMR
+		fmt.Printf("%s MR already exists (idempotent)\n", style.Bold.Render("✓"))
+	} else {
+		// Create MR bead (ephemeral wisp - will be cleaned up after merge)
+		mrIssue, err = bd.Create(beads.CreateOptions{
+			Title:       title,
+			Labels:      []string{"gt:merge-request"},
+			Priority:    priority,
+			Description: description,
+			Ephemeral:   true,
+		})
+		if err != nil {
+			return fmt.Errorf("creating merge request bead: %w", err)
+		}
+
+		// Nudge refinery to pick up the new MR
+		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
 	}
 
 	// Success output
@@ -179,60 +260,10 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 			fmt.Println(style.Dim.Render("  You may need to run 'gt handoff --shutdown' manually"))
 			return nil
 		}
-		// polecatCleanup blocks forever waiting for termination, so we never reach here
+		// polecatCleanup may timeout while waiting, but MR was already created
 	}
 
 	return nil
-}
-
-// detectIntegrationBranch checks if an issue is a child of an epic that has an integration branch.
-// Returns the integration branch target (e.g., "integration/gt-epic") if found, or "" if not.
-func detectIntegrationBranch(bd *beads.Beads, g *git.Git, issueID string) (string, error) {
-	// Get the source issue
-	issue, err := bd.Show(issueID)
-	if err != nil {
-		return "", fmt.Errorf("looking up issue %s: %w", issueID, err)
-	}
-
-	// Check if issue has a parent
-	if issue.Parent == "" {
-		return "", nil // No parent, no integration branch
-	}
-
-	// Get the parent issue
-	parent, err := bd.Show(issue.Parent)
-	if err != nil {
-		return "", fmt.Errorf("looking up parent %s: %w", issue.Parent, err)
-	}
-
-	// Check if parent is an epic
-	if parent.Type != "epic" {
-		return "", nil // Parent is not an epic
-	}
-
-	// Check if integration branch exists
-	integrationBranch := "integration/" + parent.ID
-
-	// Check local first (faster)
-	exists, err := g.BranchExists(integrationBranch)
-	if err != nil {
-		return "", fmt.Errorf("checking local branch: %w", err)
-	}
-	if exists {
-		return integrationBranch, nil
-	}
-
-	// Check remote
-	exists, err = g.RemoteBranchExists("origin", integrationBranch)
-	if err != nil {
-		// Remote check failure is non-fatal
-		return "", nil
-	}
-	if exists {
-		return integrationBranch, nil
-	}
-
-	return "", nil // No integration branch found
 }
 
 // polecatCleanup sends a lifecycle shutdown request to the witness and waits for termination.
@@ -270,6 +301,10 @@ Please verify state and execute lifecycle action.
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	// Timeout after 5 minutes to prevent indefinite blocking
+	const maxCleanupWait = 5 * time.Minute
+	timeout := time.After(maxCleanupWait)
+
 	waitStart := time.Now()
 	for {
 		select {
@@ -278,9 +313,14 @@ Please verify state and execute lifecycle action.
 			fmt.Printf("%s Still waiting (%v elapsed)...\n", style.Dim.Render("◌"), elapsed)
 			if elapsed >= 2*time.Minute {
 				fmt.Println(style.Dim.Render("  Hint: If witness isn't responding, you may need to:"))
-				fmt.Println(style.Dim.Render("  - Check if witness is running"))
+				fmt.Println(style.Dim.Render("  - Check if witness is running: gt rig status"))
 				fmt.Println(style.Dim.Render("  - Use Ctrl+C to abort and manually exit"))
 			}
+		case <-timeout:
+			fmt.Printf("%s Timeout waiting for polecat retirement\n", style.WarningPrefix)
+			fmt.Println(style.Dim.Render("  The polecat may have already terminated, or witness is unresponsive."))
+			fmt.Println(style.Dim.Render("  You can verify with: gt polecat status"))
+			return nil // Don't fail the MR submission just because cleanup timed out
 		}
 	}
 }

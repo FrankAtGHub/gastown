@@ -10,10 +10,12 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/util"
 )
 
@@ -94,6 +96,240 @@ func SaveState(townRoot string, state *State) error {
 	}
 
 	return util.AtomicWriteJSON(stateFile, state)
+}
+
+// PatrolConfig holds configuration for a single patrol.
+type PatrolConfig struct {
+	// Enabled controls whether this patrol runs during heartbeat.
+	Enabled bool `json:"enabled"`
+
+	// Interval is how often to run this patrol (not used yet).
+	Interval string `json:"interval,omitempty"`
+
+	// Agent is the agent type for this patrol (not used yet).
+	Agent string `json:"agent,omitempty"`
+
+	// Rigs limits this patrol to specific rigs. If empty, all rigs are patrolled.
+	Rigs []string `json:"rigs,omitempty"`
+}
+
+// PatrolsConfig holds configuration for all patrols.
+type PatrolsConfig struct {
+	Refinery       *PatrolConfig          `json:"refinery,omitempty"`
+	Witness        *PatrolConfig          `json:"witness,omitempty"`
+	Deacon         *PatrolConfig          `json:"deacon,omitempty"`
+	Handler        *PatrolConfig          `json:"handler,omitempty"`
+	DoltServer     *DoltServerConfig      `json:"dolt_server,omitempty"`
+	DoltRemotes    *DoltRemotesConfig     `json:"dolt_remotes,omitempty"`
+	DoltBackup     *DoltBackupConfig      `json:"dolt_backup,omitempty"`
+	JsonlGitBackup *JsonlGitBackupConfig  `json:"jsonl_git_backup,omitempty"`
+	WispReaper     *WispReaperConfig      `json:"wisp_reaper,omitempty"`
+	DoctorDog      *DoctorDogConfig       `json:"doctor_dog,omitempty"`
+	CompactorDog           *CompactorDogConfig            `json:"compactor_dog,omitempty"`
+	ScheduledMaintenance   *ScheduledMaintenanceConfig    `json:"scheduled_maintenance,omitempty"`
+	RestartTracker         *RestartTrackerConfig          `json:"restart_tracker,omitempty"`
+}
+
+// DoltRemotesConfig holds configuration for the dolt_remotes patrol.
+// This patrol periodically pushes Dolt databases to their configured remotes.
+type DoltRemotesConfig struct {
+	// Enabled controls whether remote push runs.
+	Enabled bool `json:"enabled"`
+
+	// Interval is how often to push (default 15m).
+	Interval time.Duration `json:"interval,omitempty"`
+
+	// Databases lists specific database names to push.
+	// If empty, auto-discovers databases with configured remotes.
+	Databases []string `json:"databases,omitempty"`
+
+	// Remote is the remote name to push to (default "origin").
+	Remote string `json:"remote,omitempty"`
+
+	// Branch is the branch to push (default "main").
+	Branch string `json:"branch,omitempty"`
+}
+
+// DoltBackupConfig holds configuration for the dolt_backup patrol.
+// This patrol periodically syncs Dolt databases to local filesystem backups.
+type DoltBackupConfig struct {
+	// Enabled controls whether backup sync runs.
+	Enabled bool `json:"enabled"`
+
+	// IntervalStr is how often to sync, as a string (e.g., "15m").
+	IntervalStr string `json:"interval,omitempty"`
+
+	// Databases lists specific database names to back up.
+	// If empty, auto-discovers databases with configured backup remotes.
+	Databases []string `json:"databases,omitempty"`
+}
+
+// JsonlGitBackupConfig holds configuration for the jsonl_git_backup patrol.
+// This patrol exports issues to JSONL files, scrubs ephemeral data, and pushes to a git repo.
+type JsonlGitBackupConfig struct {
+	// Enabled controls whether JSONL git backup runs.
+	Enabled bool `json:"enabled"`
+
+	// IntervalStr is how often to run, as a string (e.g., "15m").
+	IntervalStr string `json:"interval,omitempty"`
+
+	// Databases lists specific database names to export.
+	// If empty, auto-discovers from dolt server.
+	Databases []string `json:"databases,omitempty"`
+
+	// GitRepo is the path to the git repository for backup.
+	// Default: ~/.dolt-archive/git
+	GitRepo string `json:"git_repo,omitempty"`
+
+	// Scrub controls whether ephemeral data is filtered out.
+	// Default: true
+	Scrub *bool `json:"scrub,omitempty"`
+
+	// SpikeThreshold is the maximum allowed percentage change in record counts
+	// between consecutive exports. If the delta exceeds this threshold (in either
+	// direction), the export is halted and escalated. Default: 0.20 (20%).
+	SpikeThreshold *float64 `json:"spike_threshold,omitempty"`
+}
+
+// DaemonPatrolConfig is the structure of mayor/daemon.json.
+type DaemonPatrolConfig struct {
+	Type      string            `json:"type"`
+	Version   int               `json:"version"`
+	Heartbeat *PatrolConfig     `json:"heartbeat,omitempty"`
+	Patrols   *PatrolsConfig    `json:"patrols,omitempty"`
+	// Env holds environment variables to set at startup.
+	// Propagated to all sessions spawned by the daemon and read by gt up/mayor attach.
+	// Example: {"GT_DOLT_PORT": "43211"}
+	Env       map[string]string `json:"env,omitempty"`
+}
+
+// PatrolConfigFile returns the path to the patrol config file.
+func PatrolConfigFile(townRoot string) string {
+	return filepath.Join(townRoot, constants.RoleMayor, "daemon.json")
+}
+
+// LoadPatrolConfig loads patrol configuration from mayor/daemon.json.
+// Returns nil if the file doesn't exist or can't be parsed.
+func LoadPatrolConfig(townRoot string) *DaemonPatrolConfig {
+	configFile := PatrolConfigFile(townRoot)
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil
+	}
+
+	var config DaemonPatrolConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		// Log parse errors to help debug config issues (was previously silent).
+		fmt.Fprintf(os.Stderr, "daemon: failed to parse %s: %v\n", configFile, err)
+		return nil
+	}
+	return &config
+}
+
+// SavePatrolConfig saves patrol configuration to mayor/daemon.json.
+func SavePatrolConfig(townRoot string, config *DaemonPatrolConfig) error {
+	configFile := PatrolConfigFile(townRoot)
+
+	// Ensure mayor directory exists
+	if err := os.MkdirAll(filepath.Dir(configFile), 0755); err != nil {
+		return err
+	}
+
+	return util.AtomicWriteJSON(configFile, config)
+}
+
+// IsPatrolEnabled checks if a patrol is enabled in the config.
+// Returns true if the config doesn't exist (default enabled for backwards compatibility).
+// Exception: opt-in patrols (dolt_remotes) default to disabled.
+func IsPatrolEnabled(config *DaemonPatrolConfig, patrol string) bool {
+	// Opt-in patrols: disabled unless explicitly enabled in config.
+	// Must check before the nil-config fallback, otherwise nil config
+	// returns true for patrols that should default to disabled.
+	if patrol == "dolt_remotes" {
+		if config == nil || config.Patrols == nil || config.Patrols.DoltRemotes == nil {
+			return false
+		}
+		return config.Patrols.DoltRemotes.Enabled
+	}
+	if patrol == "dolt_backup" {
+		if config == nil || config.Patrols == nil || config.Patrols.DoltBackup == nil {
+			return false
+		}
+		return config.Patrols.DoltBackup.Enabled
+	}
+	if patrol == "jsonl_git_backup" {
+		if config == nil || config.Patrols == nil || config.Patrols.JsonlGitBackup == nil {
+			return false
+		}
+		return config.Patrols.JsonlGitBackup.Enabled
+	}
+	if patrol == "wisp_reaper" {
+		if config == nil || config.Patrols == nil || config.Patrols.WispReaper == nil {
+			return false
+		}
+		return config.Patrols.WispReaper.Enabled
+	}
+	if patrol == "doctor_dog" {
+		if config == nil || config.Patrols == nil || config.Patrols.DoctorDog == nil {
+			return false
+		}
+		return config.Patrols.DoctorDog.Enabled
+	}
+	if patrol == "compactor_dog" {
+		if config == nil || config.Patrols == nil || config.Patrols.CompactorDog == nil {
+			return false
+		}
+		return config.Patrols.CompactorDog.Enabled
+	}
+	if patrol == "scheduled_maintenance" {
+		if config == nil || config.Patrols == nil || config.Patrols.ScheduledMaintenance == nil {
+			return false
+		}
+		return config.Patrols.ScheduledMaintenance.Enabled
+	}
+
+	if config == nil || config.Patrols == nil {
+		return true // Default: enabled
+	}
+
+	switch patrol {
+	case constants.RoleRefinery:
+		if config.Patrols.Refinery != nil {
+			return config.Patrols.Refinery.Enabled
+		}
+	case constants.RoleWitness:
+		if config.Patrols.Witness != nil {
+			return config.Patrols.Witness.Enabled
+		}
+	case constants.RoleDeacon:
+		if config.Patrols.Deacon != nil {
+			return config.Patrols.Deacon.Enabled
+		}
+	case "handler":
+		if config.Patrols.Handler != nil {
+			return config.Patrols.Handler.Enabled
+		}
+	}
+	return true // Default: enabled
+}
+
+// GetPatrolRigs returns the list of rigs for a patrol, or nil if all rigs should be patrolled.
+func GetPatrolRigs(config *DaemonPatrolConfig, patrol string) []string {
+	if config == nil || config.Patrols == nil {
+		return nil // All rigs
+	}
+
+	switch patrol {
+	case constants.RoleRefinery:
+		if config.Patrols.Refinery != nil {
+			return config.Patrols.Refinery.Rigs
+		}
+	case constants.RoleWitness:
+		if config.Patrols.Witness != nil {
+			return config.Patrols.Witness.Rigs
+		}
+	}
+	return nil // All rigs
 }
 
 // LifecycleAction represents a lifecycle request action.

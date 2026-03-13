@@ -10,14 +10,17 @@ Complete setup guide for Gas Town multi-agent orchestrator.
 |------|---------|-------|---------|
 | **Go** | 1.24+ | `go version` | See [golang.org](https://go.dev/doc/install) |
 | **Git** | 2.20+ | `git --version` | See below |
-| **Beads** | latest | `bd version` | `go install github.com/steveyegge/beads/cmd/bd@latest` |
+| **Dolt** | >= 1.82.4 | `dolt version` | See [dolthub/dolt](https://github.com/dolthub/dolt?tab=readme-ov-file#installation) |
+| **Beads** | >= 0.55.4 | `bd version` | `go install github.com/steveyegge/beads/cmd/bd@latest` |
 
 ### Optional (for Full Stack Mode)
 
 | Tool | Version | Check | Install |
 |------|---------|-------|---------|
 | **tmux** | 3.0+ | `tmux -V` | See below |
-| **Claude Code** | latest | `claude --version` | See [claude.ai/claude-code](https://claude.ai/claude-code) |
+| **Claude Code** (default) | latest | `claude --version` | See [claude.ai/claude-code](https://claude.ai/claude-code) |
+| **Codex CLI** (optional) | latest | `codex --version` | See [developers.openai.com/codex/cli](https://developers.openai.com/codex/cli) |
+| **OpenCode CLI** (optional) | latest | `opencode --version` | See [opencode.ai](https://opencode.ai) |
 
 ## Installing Prerequisites
 
@@ -29,6 +32,7 @@ Complete setup guide for Gas Town multi-agent orchestrator.
 
 # Required
 brew install go git
+# Install Dolt: see https://github.com/dolthub/dolt?tab=readme-ov-file#installation
 
 # Optional (for full stack mode)
 brew install tmux
@@ -42,10 +46,12 @@ sudo apt update
 sudo apt install -y git
 
 # Install Go (apt version may be outdated, use official installer)
-wget https://go.dev/dl/go1.24.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.24.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.24.12.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.24.12.linux-amd64.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.bashrc
 source ~/.bashrc
+
+# Install Dolt: see https://github.com/dolthub/dolt?tab=readme-ov-file#installation
 
 # Optional (for full stack mode)
 sudo apt install -y tmux
@@ -56,6 +62,7 @@ sudo apt install -y tmux
 ```bash
 # Required
 sudo dnf install -y git golang
+# Install Dolt: see https://github.com/dolthub/dolt?tab=readme-ov-file#installation
 
 # Optional
 sudo dnf install -y tmux
@@ -67,6 +74,7 @@ sudo dnf install -y tmux
 # Check all prerequisites
 go version        # Should show go1.24 or higher
 git --version     # Should show 2.20 or higher
+dolt version      # Should show 1.82.4 or higher
 tmux -V           # (Optional) Should show 3.0 or higher
 ```
 
@@ -97,11 +105,11 @@ export PATH="$PATH:$HOME/go/bin"
 
 ```bash
 # Create a Gas Town workspace (HQ)
-gt install ~/gt
+gt install ~/gt --shell
 
 # This creates:
 #   ~/gt/
-#   ├── CLAUDE.md          # Mayor role context
+#   ├── CLAUDE.md          # Identity anchor (run gt prime)
 #   ├── mayor/             # Mayor config and state
 #   ├── rigs/              # Project containers (initially empty)
 #   └── .beads/            # Town-level issue tracking
@@ -126,6 +134,11 @@ gt rig add myproject https://github.com/you/repo.git
 
 ```bash
 cd ~/gt
+
+gt enable              # enable Gas Town system-wide
+gt git-init            # initialize a git repo for your HQ
+gt up                  # Start all services. Use gt down or gt shutdown for stopping. 
+
 gt doctor              # Run health checks
 gt status              # Show workspace status
 ```
@@ -150,7 +163,7 @@ You can also override the agent per command without changing defaults:
 
 ```bash
 gt start --agent codex-low
-gt sling issue-123 myproject --agent claude-haiku
+gt sling gt-abc12 myproject --agent claude-haiku
 ```
 
 ## Minimal Mode vs Full Stack Mode
@@ -159,16 +172,17 @@ Gas Town supports two operational modes:
 
 ### Minimal Mode (No Daemon)
 
-Run individual Claude Code instances manually. Gas Town only tracks state.
+Run individual runtime instances manually. Gas Town only tracks state.
 
 ```bash
 # Create and assign work
-gt convoy create "Fix bugs" issue-123
-gt sling issue-123 myproject
+gt convoy create "Fix bugs" gt-abc12
+gt sling gt-abc12 myproject
 
-# Run Claude manually
+# Run runtime manually
 cd ~/gt/myproject/polecats/<worker>
-claude --resume
+claude --resume          # Claude Code
+# or: codex              # Codex CLI
 
 # Check progress
 gt convoy list
@@ -185,9 +199,9 @@ Agents run in tmux sessions. Daemon manages lifecycle automatically.
 gt daemon start
 
 # Create and assign work (workers spawn automatically)
-gt convoy create "Feature X" issue-123 issue-456
-gt sling issue-123 myproject
-gt sling issue-456 myproject
+gt convoy create "Feature X" gt-abc12 gt-def34
+gt sling gt-abc12 myproject
+gt sling gt-def34 myproject
 
 # Monitor on dashboard
 gt convoy list
@@ -265,13 +279,13 @@ ssh -T git@github.com
 git config --global credential.helper cache
 ```
 
-### Beads sync issues
+### Beads issues
 
-If beads aren't syncing across clones:
+If experiencing beads problems:
 
 ```bash
 cd ~/gt/myproject/mayor/rig
-bd sync --status           # Check sync status
+bd status                  # Check database health
 bd doctor                  # Run beads health check
 ```
 
@@ -300,6 +314,7 @@ rm -rf ~/gt
 After installation:
 
 1. **Read the README** - Core concepts and workflows
-2. **Try a simple workflow** - `gt convoy create "Test" test-issue`
+2. **Try a simple workflow** - `bd create "Test task"` then `gt convoy create "Test" <bead-id>`
 3. **Explore docs** - `docs/reference.md` for command reference
 4. **Run doctor regularly** - `gt doctor` catches problems early
+5. **Join the Wasteland** - `gt wl join hop/wl-commons` to browse and claim federated work (see [WASTELAND.md](WASTELAND.md))

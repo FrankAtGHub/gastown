@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import 'fumadocs-ui/style.css';
+
+/* ============================================
+   Field Ops Theme Tokens (from @field-ops/theme)
+   Auto-switch light/dark via CSS variables
+   ============================================ */
+:root {
+  --fo-background: #f8fafc;
+  --fo-background-secondary: #f1f5f9;
+  --fo-background-tertiary: #e2e8f0;
+  --fo-card: #ffffff;
+  --fo-card-hover: #f1f5f9;
+  --fo-text: #0f172a;
+  --fo-text-secondary: #475569;
+  --fo-text-muted: #94a3b8;
+  --fo-text-inverse: #ffffff;
+  --fo-border: #e2e8f0;
+  --fo-border-light: #f1f5f9;
+  --fo-success: #16a34a;
+  --fo-success-bg: #dcfce7;
+  --fo-warning: #d97706;
+  --fo-warning-bg: #fef3c7;
+  --fo-error: #dc2626;
+  --fo-error-bg: #fee2e2;
+  --fo-info: #2563eb;
+  --fo-info-bg: #dbeafe;
+  --fo-primary: #1e40af;
+  --fo-primary-light: #3b82f6;
+  --fo-primary-dark: #1e3a8a;
+  --fo-input-bg: #ffffff;
+  --fo-input-border: #d1d5db;
+  --fo-input-text: #111827;
+  --fo-placeholder: #9ca3af;
+}
+
+.dark {
+  --fo-background: #0f172a;
+  --fo-background-secondary: #1e293b;
+  --fo-background-tertiary: #334155;
+  --fo-card: #1e293b;
+  --fo-card-hover: #334155;
+  --fo-text: #f8fafc;
+  --fo-text-secondary: #94a3b8;
+  --fo-text-muted: #64748b;
+  --fo-text-inverse: #0f172a;
+  --fo-border: #334155;
+  --fo-border-light: #475569;
+  --fo-success: #22c55e;
+  --fo-success-bg: #14532d;
+  --fo-warning: #f59e0b;
+  --fo-warning-bg: #78350f;
+  --fo-error: #ef4444;
+  --fo-error-bg: #7f1d1d;
+  --fo-info: #3b82f6;
+  --fo-info-bg: #1e3a8a;
+  --fo-primary: #3b82f6;
+  --fo-primary-light: #60a5fa;
+  --fo-primary-dark: #1e40af;
+  --fo-input-bg: #1e293b;
+  --fo-input-border: #475569;
+  --fo-input-text: #f8fafc;
+  --fo-placeholder: #64748b;
+}

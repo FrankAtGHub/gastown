@@ -3,25 +3,54 @@ package polecat
 
 import "time"
 
-// State represents the current state of a polecat.
-// In the transient model, polecats exist only while working.
+// State represents the current lifecycle state of a polecat.
+//
+// Polecats are PERSISTENT: they survive work completion and can be reused.
+// The four operating states are:
+//
+//   - Working: Session active, doing assigned work (normal operation)
+//   - Idle: Work completed, session killed, sandbox preserved for reuse
+//   - Stalled: Session stopped unexpectedly, was never nudged back to life
+//   - Zombie: Session called 'gt done' but cleanup failed - tried to die but couldn't
+//
+// The distinction matters: idle polecats completed their work successfully and
+// are ready for new assignments. Stalled polecats failed mid-work. Zombies
+// tried to exit but couldn't complete cleanup.
+//
+// Note: These are LIFECYCLE states. The polecat IDENTITY (CV chain, mailbox, work
+// history) and SANDBOX (worktree) persist across sessions. An idle polecat keeps
+// its worktree so it can be quickly reassigned without creating a new one.
+//
+// "Stalled" and "zombie" are detected conditions, not stored states. The Witness
+// detects them through monitoring (tmux state, age in StateDone, etc.).
 type State string
 
 const (
-	// StateWorking means the polecat is actively working on an issue.
-	// This is the initial and primary state for transient polecats.
+	// StateWorking means the polecat session is actively working on an issue.
+	// This is the initial and primary state after sling.
 	StateWorking State = "working"
 
-	// StateDone means the polecat has completed its assigned work
-	// and is ready for cleanup by the Witness.
+	// StateIdle means the polecat completed its work and the session was killed,
+	// but the sandbox (worktree) is preserved for reuse. An idle polecat has no
+	// hook_bead and no active session. It can be reassigned via gt sling without
+	// creating a new worktree.
+	StateIdle State = "idle"
+
+	// StateDone means the polecat has completed its assigned work and called
+	// 'gt done'. This is normally a transient state - the session should exit
+	// immediately after. If a polecat remains in StateDone, it's a "zombie":
+	// the cleanup failed and the session is stuck.
 	StateDone State = "done"
 
-	// StateStuck means the polecat needs assistance.
+	// StateStuck means the polecat has explicitly signaled it needs assistance.
+	// This is an intentional request for help from the polecat itself.
+	// Different from "stalled" (detected externally when session stops working).
 	StateStuck State = "stuck"
 
-	// StateActive is deprecated: use StateWorking.
-	// Kept only for backward compatibility with existing data.
-	StateActive State = "active"
+	// StateZombie means a tmux session exists but has no corresponding worktree directory.
+	// This is a detected condition: the polecat was incompletely nuked or has a
+	// session naming mismatch, leaving an orphaned tmux session.
+	StateZombie State = "zombie"
 )
 
 // IsWorking returns true if the polecat is currently working.
@@ -29,11 +58,9 @@ func (s State) IsWorking() bool {
 	return s == StateWorking
 }
 
-// IsActive returns true if the polecat session is actively working.
-// For transient polecats, this is true for working state and
-// legacy active state (treated as working).
-func (s State) IsActive() bool {
-	return s == StateWorking || s == StateActive
+// IsIdle returns true if the polecat has completed work and is available for reuse.
+func (s State) IsIdle() bool {
+	return s == StateIdle
 }
 
 // Polecat represents a worker agent in a rig.

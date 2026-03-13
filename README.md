@@ -37,10 +37,10 @@ graph TB
     Hooks1 -.git worktree.-> GitRepo1[Git Repository]
     Hooks2 -.git worktree.-> GitRepo2[Git Repository]
 
-    style Mayor fill:#e1f5ff
-    style Town fill:#f0f0f0
-    style Rig1 fill:#fff4e1
-    style Rig2 fill:#fff4e1
+    style Mayor fill:#e1f5ff,color:#000000
+    style Town fill:#f0f0f0,color:#000000
+    style Rig1 fill:#fff4e1,color:#000000
+    style Rig2 fill:#fff4e1,color:#000000
 ```
 
 ## Core Concepts
@@ -63,7 +63,7 @@ Your personal workspace within a rig. Where you do hands-on work.
 
 ### Polecats 🦨
 
-Ephemeral worker agents that spawn, complete a task, and disappear.
+Worker agents with persistent identity but ephemeral sessions. Spawned for tasks, sessions end on completion, but identity and work history persist.
 
 ### Hooks 🪝
 
@@ -71,11 +71,15 @@ Git worktree-based persistent storage for agent work. Survives crashes and resta
 
 ### Convoys 🚚
 
-Work tracking units. Bundle multiple issues/tasks that get assigned to agents.
+Work tracking units. Bundle multiple beads that get assigned to agents.
 
 ### Beads Integration 📿
 
 Git-backed issue tracking system that stores work state as structured data.
+
+**Bead IDs** (also called **issue IDs**) use a prefix + 5-character alphanumeric format (e.g., `gt-abc12`, `hq-x7k2m`). The prefix indicates the item's origin or rig. Commands like `gt sling` and `gt convoy` accept these IDs to reference specific work items. The terms "bead" and "issue" are used interchangeably—beads are the underlying data format, while issues are the work items stored as beads.
+
+> **New to Gas Town?** See the [Glossary](docs/glossary.md) for a complete guide to terminology and concepts.
 
 ## Installation
 
@@ -83,17 +87,27 @@ Git-backed issue tracking system that stores work state as structured data.
 
 - **Go 1.23+** - [go.dev/dl](https://go.dev/dl/)
 - **Git 2.25+** - for worktree support
-- **beads (bd) 0.44.0+** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads) (required for custom type support)
+- **Dolt 1.82.4+** - [github.com/dolthub/dolt](https://github.com/dolthub/dolt)
+- **beads (bd) 0.55.4+** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
+- **sqlite3** - for convoy database queries (usually pre-installed on macOS/Linux)
 - **tmux 3.0+** - recommended for full experience
-- **Claude Code CLI** - [claude.ai/code](https://claude.ai/code)
+- **Claude Code CLI** (default runtime) - [claude.ai/code](https://claude.ai/code)
+- **Codex CLI** (optional runtime) - [developers.openai.com/codex/cli](https://developers.openai.com/codex/cli)
 
-### Setup
+### Setup (Docker-Compose below)
 
 ```bash
 # Install Gas Town
-go install github.com/steveyegge/gastown/cmd/gt@latest
+$ brew install gastown                                    # Homebrew (recommended)
+$ npm install -g @gastown/gt                              # npm
+$ go install github.com/steveyegge/gastown/cmd/gt@latest  # From source (macOS/Linux)
 
-# Add Go binaries to PATH (add to ~/.zshrc or ~/.bashrc)
+# Windows (or if go install fails): clone and build manually
+$ git clone https://github.com/steveyegge/gastown.git && cd gastown
+$ go build -o gt.exe ./cmd/gt
+$ mv gt.exe $HOME/go/bin/  # or add gastown to PATH
+
+# If using go install, add Go binaries to PATH (add to ~/.zshrc or ~/.bashrc)
 export PATH="$PATH:$HOME/go/bin"
 
 # Create workspace with git initialization
@@ -111,7 +125,38 @@ cd myproject/crew/yourname
 gt mayor attach
 ```
 
+### Docker Compose
+
+```bash
+export GIT_USER="<your name>"
+export GIT_EMAIL="<your email>"
+export FOLDER="/Users/you/code"
+
+docker compose up --build -d
+
+docker compose exec gastown zsh # or bash
+
+gt up
+
+gh auth login #if you want gh to work
+
+gt mayor attach
+
+```
+
 ## Quick Start Guide
+
+### Getting Started
+Run
+```shell
+gt install ~/gt --git &&
+cd ~/gt &&
+gt config agent list &&
+gt mayor attach
+```
+and tell the Mayor what you want to build!
+
+---
 
 ### Basic Workflow
 
@@ -124,8 +169,8 @@ sequenceDiagram
     participant Hook
 
     You->>Mayor: Tell Mayor what to build
-    Mayor->>Convoy: Create convoy with issues
-    Mayor->>Agent: Sling issue to agent
+    Mayor->>Convoy: Create convoy with beads
+    Mayor->>Agent: Sling bead to agent
     Agent->>Hook: Store work state
     Agent->>Agent: Complete work
     Agent->>Convoy: Report completion
@@ -138,11 +183,11 @@ sequenceDiagram
 # 1. Start the Mayor
 gt mayor attach
 
-# 2. In Mayor session, create a convoy
-gt convoy create "Feature X" issue-123 issue-456 --notify --human
+# 2. In Mayor session, create a convoy with bead IDs
+gt convoy create "Feature X" gt-abc12 gt-def34 --notify --human
 
 # 3. Assign work to an agent
-gt sling issue-123 myproject
+gt sling gt-abc12 myproject
 
 # 4. Track progress
 gt convoy list
@@ -174,38 +219,69 @@ flowchart LR
 gt mayor attach
 
 # In Mayor, create convoy and let it orchestrate
-gt convoy create "Auth System" issue-101 issue-102 --notify
+gt convoy create "Auth System" gt-x7k2m gt-p9n4q --notify
 
 # Track progress
 gt convoy list
+```
+
+### Minimal Mode (No Tmux)
+
+Run individual runtime instances manually. Gas Town just tracks state.
+
+```bash
+gt convoy create "Fix bugs" gt-abc12   # Create convoy (sling auto-creates if skipped)
+gt sling gt-abc12 myproject            # Assign to worker
+claude --resume                        # Agent reads mail, runs work (Claude)
+# or: codex                            # Start Codex in the workspace
+gt convoy list                         # Check progress
 ```
 
 ### Beads Formula Workflow
 
 **Best for:** Predefined, repeatable processes
 
-Formulas are YAML-defined workflows stored in `.beads/formulas/`.
+Formulas are TOML-defined workflows embedded in the `gt` binary (source in `internal/formula/formulas/`).
 
-**Example Formula** (`.beads/formulas/release.yaml`):
+**Example Formula** (`internal/formula/formulas/release.formula.toml`):
 
-```yaml
-formula: release
-description: Standard release process
-steps:
-  - name: bump-version
-    command: ./scripts/bump-version.sh {{version}}
+```toml
+description = "Standard release process"
+formula = "release"
+version = 1
 
-  - name: run-tests
-    command: make test
+[vars.version]
+description = "The semantic version to release (e.g., 1.2.0)"
+required = true
 
-  - name: build
-    command: make build
+[[steps]]
+id = "bump-version"
+title = "Bump version"
+description = "Run ./scripts/bump-version.sh {{version}}"
 
-  - name: create-tag
-    command: git tag -a v{{version}} -m "Release v{{version}}"
+[[steps]]
+id = "run-tests"
+title = "Run tests"
+description = "Run make test"
+needs = ["bump-version"]
 
-  - name: publish
-    command: ./scripts/publish.sh
+[[steps]]
+id = "build"
+title = "Build"
+description = "Run make build"
+needs = ["run-tests"]
+
+[[steps]]
+id = "create-tag"
+title = "Create release tag"
+description = "Run git tag -a v{{version}} -m 'Release v{{version}}'"
+needs = ["build"]
+
+[[steps]]
+id = "publish"
+title = "Publish"
+description = "Run ./scripts/publish.sh"
+needs = ["create-tag"]
 ```
 
 **Execute:**
@@ -229,15 +305,39 @@ bd mol pour release --var version=1.2.0
 # Create convoy manually
 gt convoy create "Bug Fixes" --human
 
-# Add issues
-gt convoy add-issue bug-101 bug-102
+# Add issues to existing convoy
+gt convoy add hq-cv-abc gt-m3k9p gt-w5t2x
 
 # Assign to specific agents
-gt sling bug-101 myproject/my-agent
+gt sling gt-m3k9p myproject/my-agent
 
 # Check status
 gt convoy show
 ```
+
+## Runtime Configuration
+
+Gas Town supports multiple AI coding runtimes. Per-rig runtime settings are in `settings/config.json`.
+
+```json
+{
+  "runtime": {
+    "provider": "codex",
+    "command": "codex",
+    "args": [],
+    "prompt_mode": "none"
+  }
+}
+```
+
+**Notes:**
+
+- Claude uses hooks in `.claude/settings.json` (managed via `--settings` flag) for mail injection and startup.
+- For Codex, set `project_doc_fallback_filenames = ["CLAUDE.md"]` in
+  `~/.codex/config.toml` so role instructions are picked up.
+- For runtimes without hooks (e.g., Codex), Gas Town sends a startup fallback
+  after the session is ready: `gt prime`, optional `gt mail check --inject`
+  for autonomous roles, and `gt nudge deacon session-started`.
 
 ## Key Commands
 
@@ -254,20 +354,24 @@ gt crew add <name> --rig <rig>  # Create crew workspace
 
 ```bash
 gt agents                   # List active agents
-gt sling <issue> <rig>      # Assign work to agent
-gt sling <issue> <rig> --agent codex    # Override runtime for this sling/spawn
+gt sling <bead-id> <rig>    # Assign work to agent
+gt sling <bead-id> <rig> --agent cursor   # Override runtime for this sling/spawn
 gt mayor attach             # Start Mayor session
-gt mayor start --agent gemini           # Run Mayor with a specific agent alias
-gt prime                    # Alternative to mayor attach
+gt mayor start --agent auggie           # Run Mayor with a specific agent alias
+gt prime                    # Context recovery (run inside existing session)
+gt feed                     # Real-time activity feed (TUI)
+gt feed --problems          # Start in problems view (stuck agent detection)
 ```
+
+**Built-in agent presets**: `claude`, `gemini`, `codex`, `cursor`, `auggie`, `amp`, `opencode`, `copilot`, `pi`, `omp`
 
 ### Convoy (Work Tracking)
 
 ```bash
-gt convoy create <name> [issues...] # Create convoy
+gt convoy create <name> [issues...]   # Create convoy with issues
 gt convoy list              # List all convoys
 gt convoy show [id]         # Show convoy details
-gt convoy add-issue <issue> # Add issue to convoy
+gt convoy add <convoy-id> <issue-id...>  # Add issues to convoy
 ```
 
 ### Configuration
@@ -293,24 +397,64 @@ bd mol pour <formula>       # Create trackable instance
 bd mol list                 # List active instances
 ```
 
-## Dashboard
+## Cooking Formulas
 
-Gas Town includes a web dashboard for monitoring:
+Gas Town includes built-in formulas for common workflows. See `internal/formula/formulas/` for available recipes.
+
+## Activity Feed
+
+`gt feed` launches an interactive terminal dashboard for monitoring all agent activity in real-time. It combines beads activity, agent events, and merge queue updates into a three-panel TUI:
+
+- **Agent Tree** - Hierarchical view of all agents grouped by rig and role
+- **Convoy Panel** - In-progress and recently-landed convoys
+- **Event Stream** - Chronological feed of creates, completions, slings, nudges, and more
 
 ```bash
-# Start dashboard
-gt dashboard --port 8080
-
-# Open in browser
-open http://localhost:8080
+gt feed                      # Launch TUI dashboard
+gt feed --problems           # Start in problems view
+gt feed --plain              # Plain text output (no TUI)
+gt feed --window             # Open in dedicated tmux window
+gt feed --since 1h           # Events from last hour
 ```
 
-Features:
+**Navigation:** `j`/`k` to scroll, `Tab` to switch panels, `1`/`2`/`3` to jump to a panel, `?` for help, `q` to quit.
 
-- Real-time agent status
-- Convoy progress tracking
-- Hook state visualization
-- Configuration management
+### Problems View
+
+At scale (20-50+ agents), spotting stuck agents in the activity stream becomes difficult. The problems view surfaces agents needing human intervention by analyzing structured beads data.
+
+Press `p` in `gt feed` (or start with `gt feed --problems`) to toggle the problems view, which groups agents by health state:
+
+| State | Condition |
+|-------|-----------|
+| **GUPP Violation** | Hooked work with no progress for an extended period |
+| **Stalled** | Hooked work with reduced progress |
+| **Zombie** | Dead tmux session |
+| **Working** | Active, progressing normally |
+| **Idle** | No hooked work |
+
+**Intervention keys** (in problems view): `n` to nudge the selected agent, `h` to handoff (refresh context).
+
+## Dashboard
+
+Gas Town includes a web dashboard for monitoring your workspace. The dashboard
+must be run from inside a Gas Town workspace (HQ) directory.
+
+```bash
+# Start dashboard (default port 8080)
+gt dashboard
+
+# Start on a custom port
+gt dashboard --port 3000
+
+# Start and automatically open in browser
+gt dashboard --open
+```
+
+The dashboard gives you a single-page overview of everything happening in your
+workspace: agents, convoys, hooks, queues, issues, and escalations. It
+auto-refreshes via htmx and includes a command palette for running gt commands
+directly from the browser.
 
 ## Advanced Concepts
 
@@ -342,9 +486,9 @@ MEOW is the recommended pattern:
 
 1. **Tell the Mayor** - Describe what you want
 2. **Mayor analyzes** - Breaks down into tasks
-3. **Convoy creation** - Mayor creates convoy with issues
+3. **Convoy creation** - Mayor creates convoy with beads
 4. **Agent spawning** - Mayor spawns appropriate agents
-5. **Work distribution** - Issues slung to agents via hooks
+5. **Work distribution** - Beads slung to agents via hooks
 6. **Progress monitoring** - Track through convoy status
 7. **Completion** - Mayor summarizes results
 
@@ -377,7 +521,8 @@ gt completion fish > ~/.config/fish/completions/gt.fish
 - **Use convoys for coordination** - They provide visibility across agents
 - **Leverage hooks for persistence** - Your work won't disappear
 - **Create formulas for repeated tasks** - Save time with Beads recipes
-- **Monitor the dashboard** - Get real-time visibility
+- **Use `gt feed` for live monitoring** - Watch agent activity and catch stuck agents early
+- **Monitor the dashboard** - Get real-time visibility in the browser
 - **Let the Mayor orchestrate** - It knows how to manage agents
 
 ## Troubleshooting
@@ -411,7 +556,3 @@ gt mayor attach
 ## License
 
 MIT License - see LICENSE file for details
-
----
-
-**Getting Started:** Run `gt install ~/gt --git && cd ~/gt && gt config agent list && gt mayor attach` (or `gt mayor attach --agent codex`) and tell the Mayor what you want to build!

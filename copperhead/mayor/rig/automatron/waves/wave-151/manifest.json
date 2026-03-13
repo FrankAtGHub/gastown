@@ -1,0 +1,122 @@
+{
+  "wave": 151,
+  "title": "Crew Clock-In Wave A — Self-Service on Own Device",
+  "description": "Allow crew members to clock themselves in/out from their own phone with selfie + GPS location. Currently only the lead tech can clock crew in via CrewClockInScreen. This wave adds self-clock-in/out API endpoints and a Clock In button on the WO detail screen for crew-assigned technicians.",
+  "date": "2026-03-08",
+  "phase": "plan",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/mobile/sync/work-orders/:id/self-clock-in",
+      "description": "Crew member clocks themselves in with selfie + GPS"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mobile/sync/work-orders/:id/self-clock-out",
+      "description": "Crew member clocks themselves out with GPS"
+    }
+  ],
+  "routes": [],
+  "components": [],
+  "modifications": [
+    {
+      "file": "apps/api/src/controllers/mobile-sync.controller.js",
+      "description": "Add selfClockIn and selfClockOut controller methods. selfClockIn validates caller is in work_order_crew, checks no open time entry, accepts selfie + GPS, creates time_entry with clock_in_method='self'. selfClockOut finds and closes the caller's open time entry.",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/api/src/routes/mobile-sync.routes.js",
+      "description": "Add routes for self-clock-in and self-clock-out endpoints",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/services/api.service.ts",
+      "description": "Add SelfClockInRequest interface, selfClockIn() and selfClockOut() API functions, getMyCrewStatus() helper",
+      "schemaVerified": true
+    },
+    {
+      "file": "apps/mobile/src/screens/WorkOrderDetailScreen.tsx",
+      "description": "Add self-clock-in/out button for crew members. Use useAuth() to get current user ID, check if user is in crew list, show Clock In/Out button with selfie capture modal.",
+      "schemaVerified": true
+    }
+  ],
+  "doNotTouch": [
+    {
+      "file": "apps/mobile/src/screens/CrewClockInScreen.tsx",
+      "reason": "Lead tech crew management — unchanged. Existing lead flow stays as-is."
+    },
+    {
+      "file": "apps/api/migrations/",
+      "reason": "No schema changes — clock_in_method column already supports 'self' value."
+    },
+    {
+      "file": "apps/mobile/src/theme/",
+      "reason": "Theme system — unrelated to this wave."
+    }
+  ],
+  "removals": [],
+  "schemaChanges": [],
+  "seedDataChanges": [],
+  "integrationChecks": [
+    {
+      "check": "self-clock-in-api",
+      "description": "POST /api/mobile/sync/work-orders/:id/self-clock-in creates time entry for authenticated crew member",
+      "testFile": "wave-151-crew-self.test.js"
+    },
+    {
+      "check": "self-clock-out-api",
+      "description": "POST /api/mobile/sync/work-orders/:id/self-clock-out closes the caller's open time entry",
+      "testFile": "wave-151-crew-self.test.js"
+    },
+    {
+      "check": "non-crew-rejected",
+      "description": "Self-clock-in returns 403 if caller is not assigned to the work order's crew",
+      "testFile": "wave-151-crew-self.test.js"
+    },
+    {
+      "check": "mobile-ui",
+      "description": "WO detail screen shows Clock In button for crew members, Clock Out when already clocked in",
+      "testFile": ""
+    }
+  ],
+  "externalDependencies": [],
+  "envVars": [],
+  "featureFlags": [],
+  "fallbackMatrix": [],
+  "cachePlan": {
+    "key": "",
+    "ttlHours": 0,
+    "refreshEndpoint": "",
+    "invalidateOn": []
+  },
+  "observability": {
+    "logs": [],
+    "metrics": [],
+    "alerts": []
+  },
+  "rollbackPlan": {
+    "immediate": "Revert controller + routes + api.service + WO detail screen changes",
+    "safeFallback": "Self-clock-in unavailable — lead tech crew clock-in still works",
+    "dataImpact": "None — time_entries created are standard records, no schema changes"
+  },
+  "validationGate": {
+    "previousWave": {
+      "screenshotsVerified": true,
+      "reportVerified": true,
+      "d03GateVerified": true,
+      "notes": "Wave 150 architect-approved."
+    },
+    "selfCheck": {
+      "step": "Deploy to staging. Login as tech@fieldops.dev. Navigate to a WO with crew. Verify Clock In button appears. Test self-clock-in and clock-out.",
+      "screenshotsTaken": false,
+      "screenshotsReviewed": false,
+      "allPagesRenderedCorrectly": false
+    }
+  },
+  "delegation": {
+    "description": "Mayor-direct. API + mobile changes.",
+    "mayorDirect": ["All phases"],
+    "polecatMolecules": []
+  },
+  "notes": "No DB migration needed — clock_in_method='self' already exists as default value. The existing crewClockIn requires lead tech auth; selfClockIn allows any crew member to clock themselves."
+}

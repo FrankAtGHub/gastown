@@ -1,0 +1,36 @@
+{
+  "wave": 152,
+  "timestamp": "2026-03-08T08:49:00.000Z",
+  "target": "https://beta.numeruspro.com",
+  "headless": true,
+  "total": 5,
+  "passed": 5,
+  "failed": 0,
+  "flows": [
+    {
+      "name": "create-session",
+      "passed": true,
+      "message": "POST /api/work-orders/:id/clock-in-session — 200 with token, qrUrl, expiresAt"
+    },
+    {
+      "name": "verify-token",
+      "passed": true,
+      "message": "GET /api/clock-in/verify?token=XXX — 200 with WO info (number, title, customer, address)"
+    },
+    {
+      "name": "submit-clock-in",
+      "passed": true,
+      "message": "POST /api/clock-in/submit — 201 with time_entry, clock_in_method=qr_code, GPS captured"
+    },
+    {
+      "name": "duplicate-clock-in",
+      "passed": true,
+      "message": "POST /api/clock-in/submit (duplicate) — 409 Already clocked in"
+    },
+    {
+      "name": "invalid-token",
+      "passed": true,
+      "message": "GET /api/clock-in/verify?token=invalid — 404 Invalid or expired session"
+    }
+  ]
+}

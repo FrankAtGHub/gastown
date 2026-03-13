@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,13 +30,15 @@ var (
 	// Reject flags
 	mqRejectReason string
 	mqRejectNotify bool
+	mqRejectStdin  bool // Read reason from stdin
 
 	// List command flags
-	mqListReady  bool
-	mqListStatus string
-	mqListWorker string
-	mqListEpic   string
-	mqListJSON   bool
+	mqListReady   bool
+	mqListStatus  string
+	mqListWorker  string
+	mqListEpic    string
+	mqListJSON    bool
+	mqListVerify  bool
 
 	// Status command flags
 	mqStatusJSON bool
@@ -47,6 +50,11 @@ var (
 
 	// Integration status flags
 	mqIntegrationStatusJSON bool
+
+	// Integration create flags
+	mqIntegrationCreateBranch     string
+	mqIntegrationCreateBaseBranch string
+	mqIntegrationCreateForce      bool
 )
 
 var mqCmd = &cobra.Command{
@@ -79,8 +87,8 @@ Auto-detection:
   - Priority: inherited from source issue
 
 Target branch auto-detection:
-  1. If --epic is specified: target integration/<epic>
-  2. If source issue has a parent epic with integration/<epic> branch: target it
+  1. If --epic is specified: target the integration branch for <epic> (using configured template)
+  2. If source issue has a parent epic with an integration branch: target it
   3. Otherwise: target main
 
 This ensures batch work on epics automatically flows to integration branches.
@@ -155,6 +163,29 @@ Examples:
 	RunE: runMQReject,
 }
 
+// Post-merge flags
+var mqPostMergeSkipBranchDelete bool
+
+var mqPostMergeCmd = &cobra.Command{
+	Use:   "post-merge <rig> <mr-id>",
+	Short: "Run post-merge cleanup (close MR, delete branch)",
+	Long: `Perform post-merge cleanup after a successful merge.
+
+This command consolidates post-merge steps into a single atomic operation:
+  1. Close the MR bead (status: merged)
+  2. Close the source issue
+  3. Delete the remote polecat branch (unless --skip-branch-delete)
+
+Designed for use by the refinery formula after a successful merge to main.
+The branch name is read from the MR bead, so no manual branch argument is needed.
+
+Examples:
+  gt mq post-merge gastown gt-mr-abc123
+  gt mq post-merge gastown gt-mr-abc123 --skip-branch-delete`,
+	Args: cobra.ExactArgs(2),
+	RunE: runMQPostMerge,
+}
+
 var mqStatusCmd = &cobra.Command{
 	Use:   "status <id>",
 	Short: "Show detailed merge request status",
@@ -190,18 +221,35 @@ var mqIntegrationCreateCmd = &cobra.Command{
 	Short: "Create an integration branch for an epic",
 	Long: `Create an integration branch for batch work on an epic.
 
-Creates a branch named integration/<epic-id> from main and pushes it
-to origin. Future MRs for this epic's children can target this branch.
+Creates a branch from main and pushes it to origin. Future MRs for this
+epic's children can target this branch.
+
+Branch naming:
+  Default: integration/<sanitized-title> (e.g., integration/add-user-auth)
+  Config:  Set merge_queue.integration_branch_template in rig settings
+  Override: Use --branch flag for one-off customization
+
+Template variables:
+  {title}  - Sanitized epic title (e.g., "add-user-authentication")
+  {epic}   - Full epic ID (e.g., "RA-123")
+  {prefix} - Epic prefix before first hyphen (e.g., "RA")
+  {user}   - Git user.name (e.g., "klauern")
+
+If two epics produce the same branch name, a numeric suffix from the
+epic ID is appended automatically (e.g., integration/add-auth-123).
 
 Actions:
   1. Verify epic exists
-  2. Create branch integration/<epic-id> from main
+  2. Create branch from main (using template or --branch)
   3. Push to origin
-  4. Store integration branch info in epic metadata
+  4. Store actual branch name in epic metadata
 
-Example:
+Examples:
   gt mq integration create gt-auth-epic
-  # Creates integration/gt-auth-epic from main`,
+  # Creates integration/add-user-authentication (from epic title)
+
+  gt mq integration create RA-123 --branch "klauern/PROJ-1234/{epic}"
+  # Creates klauern/PROJ-1234/RA-123`,
 	Args: cobra.ExactArgs(1),
 	RunE: runMqIntegrationCreate,
 }
@@ -270,14 +318,18 @@ func init() {
 	mqListCmd.Flags().StringVar(&mqListWorker, "worker", "", "Filter by worker name")
 	mqListCmd.Flags().StringVar(&mqListEpic, "epic", "", "Show MRs targeting integration/<epic>")
 	mqListCmd.Flags().BoolVar(&mqListJSON, "json", false, "Output as JSON")
+	mqListCmd.Flags().BoolVar(&mqListVerify, "verify", false, "Verify branches exist in git (shows MISSING for deleted branches)")
 
 	// Reject flags
-	mqRejectCmd.Flags().StringVarP(&mqRejectReason, "reason", "r", "", "Reason for rejection (required)")
+	mqRejectCmd.Flags().StringVarP(&mqRejectReason, "reason", "r", "", "Reason for rejection (required unless --stdin)")
 	mqRejectCmd.Flags().BoolVar(&mqRejectNotify, "notify", false, "Send mail notification to worker")
-	_ = mqRejectCmd.MarkFlagRequired("reason") // cobra flags: error only at runtime if missing
+	mqRejectCmd.Flags().BoolVar(&mqRejectStdin, "stdin", false, "Read reason from stdin (avoids shell quoting issues)")
 
 	// Status flags
 	mqStatusCmd.Flags().BoolVar(&mqStatusJSON, "json", false, "Output as JSON")
+
+	// Post-merge flags
+	mqPostMergeCmd.Flags().BoolVar(&mqPostMergeSkipBranchDelete, "skip-branch-delete", false, "Skip remote branch deletion")
 
 	// Add subcommands
 	mqCmd.AddCommand(mqSubmitCmd)
@@ -285,8 +337,12 @@ func init() {
 	mqCmd.AddCommand(mqListCmd)
 	mqCmd.AddCommand(mqRejectCmd)
 	mqCmd.AddCommand(mqStatusCmd)
+	mqCmd.AddCommand(mqPostMergeCmd)
 
 	// Integration branch subcommands
+	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBranch, "branch", "", "Override branch name template (supports {title}, {epic}, {prefix}, {user})")
+	mqIntegrationCreateCmd.Flags().StringVar(&mqIntegrationCreateBaseBranch, "base-branch", "", "Create integration branch from this branch instead of main")
+	mqIntegrationCreateCmd.Flags().BoolVar(&mqIntegrationCreateForce, "force", false, "Recreate integration branch even if one already exists")
 	mqIntegrationCmd.AddCommand(mqIntegrationCreateCmd)
 
 	// Integration land flags
@@ -320,11 +376,19 @@ func findCurrentRig(townRoot string) (string, *rig.Rig, error) {
 
 	// The first component of the relative path should be the rig name
 	parts := strings.Split(relPath, string(filepath.Separator))
-	if len(parts) == 0 || parts[0] == "" || parts[0] == "." {
-		return "", nil, fmt.Errorf("not inside a rig directory")
+	rigName := ""
+	if len(parts) > 0 && parts[0] != "" && parts[0] != "." {
+		rigName = parts[0]
 	}
 
-	rigName := parts[0]
+	// When gt is invoked via shell alias (cd ~/gt && gt), cwd is the town
+	// root and relPath is ".". Fall back to GT_RIG env var.
+	if rigName == "" {
+		rigName = os.Getenv("GT_RIG")
+	}
+	if rigName == "" {
+		return "", nil, fmt.Errorf("not inside a rig directory (and GT_RIG not set)")
+	}
 
 	// Load rig manager and get the rig
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
@@ -388,6 +452,23 @@ func runMQRetry(cmd *cobra.Command, args []string) error {
 }
 
 func runMQReject(cmd *cobra.Command, args []string) error {
+	// Handle --stdin: read reason from stdin (avoids shell quoting issues)
+	if mqRejectStdin {
+		if mqRejectReason != "" {
+			return fmt.Errorf("cannot use --stdin with --reason/-r")
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading stdin: %w", err)
+		}
+		mqRejectReason = strings.TrimRight(string(data), "\n")
+	}
+
+	// Require reason via --reason or --stdin
+	if mqRejectReason == "" {
+		return fmt.Errorf("required flag \"reason\" not set (use --reason/-r or --stdin)")
+	}
+
 	rigName := args[0]
 	mrIDOrBranch := args[1]
 
@@ -411,6 +492,85 @@ func runMQReject(cmd *cobra.Command, args []string) error {
 
 	if mqRejectNotify {
 		fmt.Printf("  %s\n", style.Dim.Render("Worker notified via mail"))
+	}
+
+	return nil
+}
+
+func runMQPostMerge(_ *cobra.Command, args []string) error {
+	rigName := args[0]
+	mrID := args[1]
+
+	mgr, r, _, err := getRefineryManager(rigName)
+	if err != nil {
+		return err
+	}
+
+	// Run beads-level cleanup (close MR bead + source issue)
+	result, err := mgr.PostMerge(mrID)
+	if err != nil {
+		return fmt.Errorf("post-merge cleanup: %w", err)
+	}
+
+	mr := result.MR
+	fmt.Printf("%s Post-merge: %s\n", style.Bold.Render("✓"), mr.ID)
+	fmt.Printf("  Branch: %s\n", mr.Branch)
+	fmt.Printf("  Worker: %s\n", mr.Worker)
+
+	if result.MRClosed {
+		fmt.Printf("  %s MR closed (merged)\n", style.Success.Render("✓"))
+	}
+	if result.SourceIssueClosed {
+		fmt.Printf("  %s Source issue closed: %s\n", style.Success.Render("✓"), result.SourceIssueID)
+	} else if result.SourceIssueNotFound {
+		fmt.Printf("  %s Source issue: %s %s\n", style.Dim.Render("○"), result.SourceIssueID, style.Dim.Render("(already closed or not found)"))
+	}
+
+	// Delete remote branch unless skipped
+	if mr.Branch == "" {
+		fmt.Printf("  %s No branch name in MR (skipping branch delete)\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	if mqPostMergeSkipBranchDelete {
+		fmt.Printf("  %s Branch delete skipped (--skip-branch-delete)\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	// Check rig config for delete_merged_branches setting
+	settingsPath := filepath.Join(r.Path, "settings", "config.json")
+	deleteEnabled := true // default: delete merged branches
+	if settings, err := config.LoadRigSettings(settingsPath); err == nil {
+		if settings.MergeQueue != nil {
+			deleteEnabled = settings.MergeQueue.IsDeleteMergedBranchesEnabled()
+		}
+	}
+
+	if !deleteEnabled {
+		fmt.Printf("  %s Branch delete disabled by config\n", style.Dim.Render("○"))
+		return nil
+	}
+
+	// Get git client for the rig
+	rigGit, err := getRigGit(r.Path)
+	if err != nil {
+		fmt.Printf("  %s branch delete: %v\n", style.Warning.Render("⚠"), err)
+		return nil // non-fatal: beads cleanup succeeded
+	}
+
+	// Delete remote branch
+	if err := rigGit.DeleteRemoteBranch("origin", mr.Branch); err != nil {
+		fmt.Printf("  %s remote branch delete: %v\n", style.Warning.Render("⚠"), err)
+	} else {
+		fmt.Printf("  %s Deleted remote branch: %s\n", style.Success.Render("✓"), mr.Branch)
+	}
+
+	// Also clean up the local tracking ref if it exists
+	if err := rigGit.DeleteBranch(mr.Branch, true); err != nil {
+		// Not a warning — local branch often doesn't exist
+		_ = err
+	} else {
+		fmt.Printf("  %s Deleted local branch: %s\n", style.Success.Render("✓"), mr.Branch)
 	}
 
 	return nil

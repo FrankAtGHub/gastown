@@ -1,0 +1,13 @@
+{
+  "wave": 154,
+  "title": "Mobile Dark Theme Navigator Fix",
+  "scope": "Theme-aware headers, tab bar, loading screen in AppNavigator + ProfileScreen",
+  "files": [
+    "apps/mobile/src/navigation/AppNavigator.js",
+    "apps/mobile/src/screens/ProfileScreen.js",
+    "apps/mobile/package.json",
+    "apps/mobile/metro.config.js"
+  ],
+  "tests": ["tests/wave-154-navigator-theme.test.js"],
+  "dependencies": ["wave-150"]
+}

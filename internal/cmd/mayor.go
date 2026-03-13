@@ -1,34 +1,38 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
-	"time"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daemon"
+	"github.com/steveyegge/gastown/internal/doltserver"
+	"github.com/steveyegge/gastown/internal/mayor"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
-// getMayorSessionName returns the Mayor session name.
-func getMayorSessionName() string {
-	return session.MayorSessionName()
-}
-
 var mayorCmd = &cobra.Command{
 	Use:     "mayor",
 	Aliases: []string{"may"},
 	GroupID: GroupAgents,
-	Short:   "Manage the Mayor session",
+	Short:   "Manage the Mayor (Chief of Staff for cross-rig coordination)",
 	RunE:    requireSubcommand,
-	Long: `Manage the Mayor tmux session.
+	Long: `Manage the Mayor - the Overseer's Chief of Staff.
 
-The Mayor is the global coordinator for Gas Town, running as a persistent
-tmux session. Use the subcommands to start, stop, attach, and check status.`,
+The Mayor is the global coordinator for Gas Town:
+  - Receives escalations from Witnesses and Deacon
+  - Coordinates work across multiple rigs
+  - Handles human communication when needed
+  - Routes strategic decisions and cross-project issues
+
+The Mayor is the primary interface between the human Overseer and the
+automated agents. When in doubt, escalate to the Mayor.
+
+Role shortcuts: "mayor" in mail/nudge addresses resolves to this agent.`,
 }
 
 var mayorAgentOverride string
@@ -93,21 +97,31 @@ func init() {
 	rootCmd.AddCommand(mayorCmd)
 }
 
-func runMayorStart(cmd *cobra.Command, args []string) error {
-	t := tmux.NewTmux()
-
-	sessionName := getMayorSessionName()
-
-	// Check if session already exists
-	running, err := t.HasSession(sessionName)
+// getMayorManager returns a mayor manager for the current workspace.
+func getMayorManager() (*mayor.Manager, error) {
+	townRoot, err := workspace.FindFromCwdOrError()
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
+		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
-	if running {
-		return fmt.Errorf("Mayor session already running. Attach with: gt mayor attach")
+	return mayor.NewManager(townRoot), nil
+}
+
+// getMayorSessionName returns the Mayor session name.
+func getMayorSessionName() string {
+	return mayor.SessionName()
+}
+
+func runMayorStart(cmd *cobra.Command, args []string) error {
+	mgr, err := getMayorManager()
+	if err != nil {
+		return err
 	}
 
-	if err := startMayorSession(t, sessionName, mayorAgentOverride); err != nil {
+	fmt.Println("Starting Mayor session...")
+	if err := mgr.Start(mayorAgentOverride); err != nil {
+		if err == mayor.ErrAlreadyRunning {
+			return fmt.Errorf("Mayor session already running. Attach with: gt mayor attach")
+		}
 		return err
 	}
 
@@ -118,86 +132,18 @@ func runMayorStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// startMayorSession creates and initializes the Mayor tmux session.
-func startMayorSession(t *tmux.Tmux, sessionName, agentOverride string) error {
-	// Find workspace root
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
-		return fmt.Errorf("not in a Gas Town workspace: %w", err)
-	}
-
-	// Create session in workspace root
-	fmt.Println("Starting Mayor session...")
-	if err := t.NewSession(sessionName, townRoot); err != nil {
-		return fmt.Errorf("creating session: %w", err)
-	}
-
-	// Set environment (non-fatal: session works without these)
-	_ = t.SetEnvironment(sessionName, "GT_ROLE", "mayor")
-	_ = t.SetEnvironment(sessionName, "BD_ACTOR", "mayor")
-
-	// Apply Mayor theme (non-fatal: theming failure doesn't affect operation)
-	// Note: ConfigureGasTownSession includes cycle bindings
-	theme := tmux.MayorTheme()
-	_ = t.ConfigureGasTownSession(sessionName, theme, "", "Mayor", "coordinator")
-
-	// Launch Claude - the startup hook handles 'gt prime' automatically
-	// Use SendKeysDelayed to allow shell initialization after NewSession
-	// Export GT_ROLE and BD_ACTOR in the command since tmux SetEnvironment only affects new panes
-	// Mayor uses default runtime config (empty rigPath) since it's not rig-specific
-	startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("mayor", "mayor", "", "", agentOverride)
-	if err != nil {
-		return fmt.Errorf("building startup command: %w", err)
-	}
-	if err := t.SendKeysDelayed(sessionName, startupCmd, 200); err != nil {
-		return fmt.Errorf("sending command: %w", err)
-	}
-
-	// Wait for Claude to start (non-fatal)
-	if err := t.WaitForCommand(sessionName, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-		// Non-fatal
-	}
-	time.Sleep(constants.ShutdownNotifyDelay)
-
-	// Inject startup nudge for predecessor discovery via /resume
-	_ = session.StartupNudge(t, sessionName, session.StartupNudgeConfig{
-		Recipient: "mayor",
-		Sender:    "human",
-		Topic:     "cold-start",
-	}) // Non-fatal
-
-	// GUPP: Gas Town Universal Propulsion Principle
-	// Send the propulsion nudge to trigger autonomous coordination.
-	// Wait for beacon to be fully processed (needs to be separate prompt)
-	time.Sleep(2 * time.Second)
-	_ = t.NudgeSession(sessionName, session.PropulsionNudgeForRole("mayor", townRoot)) // Non-fatal
-
-	return nil
-}
-
 func runMayorStop(cmd *cobra.Command, args []string) error {
-	t := tmux.NewTmux()
-
-	sessionName := getMayorSessionName()
-
-	// Check if session exists
-	running, err := t.HasSession(sessionName)
+	mgr, err := getMayorManager()
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
-	}
-	if !running {
-		return errors.New("Mayor session is not running")
+		return err
 	}
 
 	fmt.Println("Stopping Mayor session...")
-
-	// Try graceful shutdown first (best-effort interrupt)
-	_ = t.SendKeysRaw(sessionName, "C-c")
-	time.Sleep(100 * time.Millisecond)
-
-	// Kill the session
-	if err := t.KillSession(sessionName); err != nil {
-		return fmt.Errorf("killing session: %w", err)
+	if err := mgr.Stop(); err != nil {
+		if err == mayor.ErrNotRunning {
+			return fmt.Errorf("Mayor session is not running")
+		}
+		return err
 	}
 
 	fmt.Printf("%s Mayor session stopped.\n", style.Bold.Render("✓"))
@@ -205,86 +151,183 @@ func runMayorStop(cmd *cobra.Command, args []string) error {
 }
 
 func runMayorAttach(cmd *cobra.Command, args []string) error {
+	mgr, err := getMayorManager()
+	if err != nil {
+		return err
+	}
+
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("finding workspace: %w", err)
+	}
+
+	// Ensure daemon and dolt are running before attaching.
+	if err := ensureMayorInfra(townRoot); err != nil {
+		return err
+	}
+
 	t := tmux.NewTmux()
+	sessionID := mgr.SessionName()
 
-	sessionName := getMayorSessionName()
-
-	// Check if session exists
-	running, err := t.HasSession(sessionName)
+	running, err := mgr.IsRunning()
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
 	}
 	if !running {
 		// Auto-start if not running
 		fmt.Println("Mayor session not running, starting...")
-		if err := startMayorSession(t, sessionName, mayorAgentOverride); err != nil {
+		if err := mgr.Start(mayorAgentOverride); err != nil {
 			return err
+		}
+	} else {
+		// Session exists - check if runtime is still running (hq-95xfq, gt-7zl)
+		// If runtime exited or sitting at shell, restart with proper context.
+		// Use IsAgentAlive (checks descendant processes) instead of IsAgentRunning
+		// (pane command only), since mayor launches via bash wrapper.
+		if !t.IsAgentAlive(sessionID) {
+			// Runtime has exited, restart it with proper context
+			fmt.Println("Runtime exited, restarting with context...")
+
+			paneID, err := t.GetPaneID(sessionID)
+			if err != nil {
+				return fmt.Errorf("getting pane ID: %w", err)
+			}
+
+			// Build startup beacon for context (like gt handoff does)
+			beacon := session.FormatStartupBeacon(session.BeaconConfig{
+				Recipient: "mayor",
+				Sender:    "human",
+				Topic:     "attach",
+			})
+
+			// Build startup command with beacon
+			startupCmd, err := config.BuildAgentStartupCommandWithAgentOverride("mayor", "", townRoot, "", beacon, mayorAgentOverride)
+			if err != nil {
+				return fmt.Errorf("building startup command: %w", err)
+			}
+
+			// Set remain-on-exit so the pane survives process death during respawn.
+			// Without this, killing processes causes tmux to destroy the pane.
+			if err := t.SetRemainOnExit(paneID, true); err != nil {
+				style.PrintWarning("could not set remain-on-exit: %v", err)
+			}
+
+			// Kill all processes in the pane before respawning to prevent orphan leaks
+			// RespawnPane's -k flag only sends SIGHUP which Claude/Node may ignore
+			if err := t.KillPaneProcesses(paneID); err != nil {
+				// Non-fatal but log the warning
+				style.PrintWarning("could not kill pane processes: %v", err)
+			}
+
+			// Note: respawn-pane automatically resets remain-on-exit to off
+			if err := t.RespawnPane(paneID, startupCmd); err != nil {
+				return fmt.Errorf("restarting runtime: %w", err)
+			}
+
+			fmt.Printf("%s Mayor restarted with context\n", style.Bold.Render("✓"))
 		}
 	}
 
 	// Use shared attach helper (smart: links if inside tmux, attaches if outside)
-	return attachToTmuxSession(sessionName)
+	return attachToTmuxSession(sessionID)
 }
 
 func runMayorStatus(cmd *cobra.Command, args []string) error {
-	t := tmux.NewTmux()
-
-	sessionName := getMayorSessionName()
-
-	running, err := t.HasSession(sessionName)
+	mgr, err := getMayorManager()
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
+		return err
 	}
 
-	if running {
-		// Get session info for more details
-		info, err := t.GetSessionInfo(sessionName)
-		if err == nil {
-			status := "detached"
-			if info.Attached {
-				status = "attached"
-			}
+	info, err := mgr.Status()
+	if err != nil {
+		if err == mayor.ErrNotRunning {
 			fmt.Printf("%s Mayor session is %s\n",
-				style.Bold.Render("●"),
-				style.Bold.Render("running"))
-			fmt.Printf("  Status: %s\n", status)
-			fmt.Printf("  Created: %s\n", info.Created)
-			fmt.Printf("\nAttach with: %s\n", style.Dim.Render("gt mayor attach"))
-		} else {
-			fmt.Printf("%s Mayor session is %s\n",
-				style.Bold.Render("●"),
-				style.Bold.Render("running"))
+				style.Dim.Render("○"),
+				"not running")
+			fmt.Printf("\nStart with: %s\n", style.Dim.Render("gt mayor start"))
+			return nil
 		}
-	} else {
-		fmt.Printf("%s Mayor session is %s\n",
-			style.Dim.Render("○"),
-			"not running")
-		fmt.Printf("\nStart with: %s\n", style.Dim.Render("gt mayor start"))
+		return fmt.Errorf("checking status: %w", err)
 	}
+
+	status := "detached"
+	if info.Attached {
+		status = "attached"
+	}
+	fmt.Printf("%s Mayor session is %s\n",
+		style.Bold.Render("●"),
+		style.Bold.Render("running"))
+	fmt.Printf("  Status: %s\n", status)
+	fmt.Printf("  Created: %s\n", info.Created)
+	fmt.Printf("\nAttach with: %s\n", style.Dim.Render("gt mayor attach"))
 
 	return nil
 }
 
 func runMayorRestart(cmd *cobra.Command, args []string) error {
-	t := tmux.NewTmux()
-
-	sessionName := getMayorSessionName()
-
-	running, err := t.HasSession(sessionName)
+	mgr, err := getMayorManager()
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
+		return err
 	}
 
-	if running {
-		// Stop the current session (best-effort interrupt before kill)
-		fmt.Println("Stopping Mayor session...")
-		_ = t.SendKeysRaw(sessionName, "C-c")
-		time.Sleep(100 * time.Millisecond)
-		if err := t.KillSession(sessionName); err != nil {
-			return fmt.Errorf("killing session: %w", err)
-		}
+	// Stop if running (ignore not-running error)
+	if err := mgr.Stop(); err != nil && err != mayor.ErrNotRunning {
+		return fmt.Errorf("stopping session: %w", err)
 	}
 
 	// Start fresh
 	return runMayorStart(cmd, args)
+}
+
+// ensureMayorInfra checks that daemon and dolt are running before attaching
+// to the Mayor session. Warns and auto-starts each if absent.
+// Returns an error if Dolt fails to start — a missing Dolt server is fatal
+// for the Mayor (it cannot operate without database access).
+// Daemon failures are non-fatal (warned but do not block).
+func ensureMayorInfra(townRoot string) error {
+	// Load daemon.json env vars (e.g., GT_DOLT_PORT) so Dolt uses the right port.
+	if patrolCfg := daemon.LoadPatrolConfig(townRoot); patrolCfg != nil {
+		for k, v := range patrolCfg.Env {
+			os.Setenv(k, v)
+		}
+	}
+
+	// Daemon (non-fatal)
+	daemonRunning, _, _ := daemon.IsRunning(townRoot)
+	if !daemonRunning {
+		style.PrintWarning("daemon is not running, starting...")
+		if err := ensureDaemon(townRoot); err != nil {
+			style.PrintWarning("daemon start failed: %v", err)
+		} else {
+			fmt.Printf("  %s Daemon started\n", style.Bold.Render("✓"))
+		}
+	}
+
+	// Dolt (fatal on failure — Mayor requires database access)
+	doltCfg := doltserver.DefaultConfig(townRoot)
+	if !doltCfg.IsRemote() {
+		if _, err := os.Stat(doltCfg.DataDir); err == nil {
+			doltRunning, _, _ := doltserver.IsRunning(townRoot)
+			if !doltRunning {
+				style.PrintWarning("Dolt server is not running, starting...")
+				if err := doltserver.Start(townRoot); err != nil {
+					// Enrich port-conflict errors with a concrete free-port suggestion.
+					msg := fmt.Sprintf("Dolt server start failed: %v", err)
+					if pid, dataDir := doltserver.PortHolder(doltCfg.Port); pid > 0 {
+						if dataDir != "" {
+							msg += fmt.Sprintf("\n  port %d held by dolt PID %d serving %s", doltCfg.Port, pid, dataDir)
+						} else {
+							msg += fmt.Sprintf("\n  port %d held by PID %d", doltCfg.Port, pid)
+						}
+					}
+					if freePort := doltserver.FindFreePort(doltCfg.Port + 1); freePort > 0 {
+						msg += fmt.Sprintf("\n\nConfigure a free port for this town, then retry:\n  gt config set dolt.port %d && gt mayor at", freePort)
+					}
+					return fmt.Errorf("%s", msg)
+				}
+				fmt.Printf("  %s Dolt server started (port %d)\n", style.Bold.Render("✓"), doltCfg.Port)
+			}
+		}
+	}
+	return nil
 }

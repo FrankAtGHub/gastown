@@ -1,0 +1,22 @@
+{
+  "wave": 156,
+  "timestamp": "2026-03-08T16:18:00.000Z",
+  "target": "https://docs.numeruspro.com",
+  "headless": true,
+  "total": 3,
+  "passed": 3,
+  "failed": 0,
+  "allPassed": true,
+  "flows": [
+    {
+      "name": "wave-156-docs-theme.flow.cjs",
+      "checks": [
+        { "name": "Docs site renders", "status": "pass" },
+        { "name": "Staging API login successful", "status": "pass" },
+        { "name": "Dashboard renders", "status": "pass" }
+      ]
+    }
+  ],
+  "screenshots": ["docs-home.png", "dashboard.png"],
+  "notes": "Theme wiring is code-only. Docs site needs rebuild+deploy to verify fo-* Tailwind classes work. Current verification confirms no regression."
+}

@@ -4,18 +4,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/boot"
+	"github.com/steveyegge/gastown/internal/daemon"
 	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 var (
-	bootStatusJSON bool
-	bootDegraded   bool
+	bootStatusJSON    bool
+	bootDegraded      bool
+	bootAgentOverride string
 )
 
 var bootCmd = &cobra.Command{
@@ -84,6 +90,7 @@ Use --degraded flag when running in degraded mode.`,
 func init() {
 	bootStatusCmd.Flags().BoolVar(&bootStatusJSON, "json", false, "Output as JSON")
 	bootTriageCmd.Flags().BoolVar(&bootDegraded, "degraded", false, "Run in degraded mode (no tmux)")
+	bootSpawnCmd.Flags().StringVar(&bootAgentOverride, "agent", "", "Agent alias to run Boot with (overrides town default)")
 
 	bootCmd.AddCommand(bootStatusCmd)
 	bootCmd.AddCommand(bootSpawnCmd)
@@ -139,7 +146,7 @@ func runBootStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if sessionAlive {
-		fmt.Printf("  Session: %s (alive)\n", boot.SessionName)
+		fmt.Printf("  Session: %s (alive)\n", session.BootSessionName())
 	} else {
 		fmt.Printf("  Session: %s\n", style.Dim.Render("not running"))
 	}
@@ -198,7 +205,6 @@ func runBootSpawn(cmd *cobra.Command, args []string) error {
 
 	// Save starting status
 	status := &boot.Status{
-		Running:   true,
 		StartedAt: time.Now(),
 	}
 	if err := b.SaveStatus(status); err != nil {
@@ -206,10 +212,9 @@ func runBootSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	// Spawn Boot
-	if err := b.Spawn(); err != nil {
+	if err := b.Spawn(bootAgentOverride); err != nil {
 		status.Error = err.Error()
 		status.CompletedAt = time.Now()
-		status.Running = false
 		_ = b.SaveStatus(status)
 		return fmt.Errorf("spawning boot: %w", err)
 	}
@@ -217,7 +222,7 @@ func runBootSpawn(cmd *cobra.Command, args []string) error {
 	if b.IsDegraded() {
 		fmt.Println("Boot spawned in degraded mode (subprocess)")
 	} else {
-		fmt.Printf("Boot spawned in session: %s\n", boot.SessionName)
+		fmt.Printf("Boot spawned in session: %s\n", session.BootSessionName())
 	}
 
 	return nil
@@ -237,7 +242,6 @@ func runBootTriage(cmd *cobra.Command, args []string) error {
 
 	startTime := time.Now()
 	status := &boot.Status{
-		Running:   true,
 		StartedAt: startTime,
 	}
 
@@ -247,7 +251,6 @@ func runBootTriage(cmd *cobra.Command, args []string) error {
 
 	status.LastAction = action
 	status.Target = target
-	status.Running = false
 	status.CompletedAt = time.Now()
 
 	if triageErr != nil {
@@ -271,12 +274,34 @@ func runBootTriage(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runDegradedTriage performs basic Deacon health check without AI reasoning.
-// This is a mechanical fallback when full Claude sessions aren't available.
+// runDegradedTriage performs mechanical Deacon health checks without AI reasoning.
+//
+// ZFC principle: "Agent decides. Go transports." Complex triage decisions
+// (heartbeat staleness, idle detection, backoff awareness, molecule progress)
+// belong in the Boot agent's mol-boot-triage formula, not in Go code.
+// This function handles only mechanical safety checks that must work even
+// when no AI agent is available.
 func runDegradedTriage(b *boot.Boot) (action, target string, err error) {
+	// Abort triage if a shutdown is in progress. Without this check, Boot could
+	// detect Deacon as "down" during the graceful shutdown window and restart it,
+	// creating a zombie Deacon that survives gt down.
+	townRoot, _ := workspace.FindFromCwd()
+	if townRoot != "" && daemon.IsShutdownInProgress(townRoot) {
+		return "nothing", "shutdown-in-progress", nil
+	}
+
 	tm := b.Tmux()
 
-	// Check if Deacon session exists
+	// Scan and execute pending death warrants. This is a side effect that runs
+	// before the normal triage decision — warrant execution is mechanical and
+	// does not affect which action runDegradedTriage returns to the caller.
+	if townRoot != "" {
+		executeWarrants(filepath.Join(townRoot, "warrants"), tm)
+	}
+
+	// Check if Deacon session exists — the only mechanical check degraded
+	// triage needs. All deeper reasoning (staleness, idle, backoff, progress)
+	// is the Boot agent's job via mol-boot-triage.
 	deaconSession := getDeaconSessionName()
 	hasDeacon, err := tm.HasSession(deaconSession)
 	if err != nil {
@@ -284,36 +309,65 @@ func runDegradedTriage(b *boot.Boot) (action, target string, err error) {
 	}
 
 	if !hasDeacon {
-		// Deacon not running - this is unusual, daemon should have restarted it
-		// In degraded mode, we just report - let daemon handle restart
-		return "report", "deacon-missing", nil
+		// Deacon not running - start it immediately rather than waiting
+		// for the next daemon heartbeat cycle (up to 3 minutes away).
+		fmt.Println("Deacon session missing - starting Deacon")
+		if townRoot != "" {
+			mgr := deacon.NewManager(townRoot)
+			if err := mgr.Start(""); err != nil && err != deacon.ErrAlreadyRunning {
+				fmt.Printf("Failed to start Deacon: %v\n", err)
+				return "error", "deacon-start-failed", fmt.Errorf("starting deacon: %w", err)
+			}
+			return "start", "deacon-restarted", nil
+		}
+		return "error", "deacon-missing", fmt.Errorf("cannot find town root to start deacon")
 	}
 
-	// Deacon exists - check heartbeat to detect stuck sessions
-	// A session can exist but be stuck (not making progress)
-	townRoot, _ := workspace.FindFromCwd()
-	if townRoot != "" {
-		hb := deacon.ReadHeartbeat(townRoot)
-		if hb.ShouldPoke() {
-			// Heartbeat is stale (>15 min) - Deacon is stuck
-			// Nudge the session to try to wake it up
-			age := hb.Age()
-			if age > 30*time.Minute {
-				// Very stuck - restart the session
-				fmt.Printf("Deacon heartbeat is %s old - restarting session\n", age.Round(time.Minute))
-				if err := tm.KillSession(deaconSession); err == nil {
-					return "restart", "deacon-stuck", nil
-				}
-			} else {
-				// Stuck but not critically - try nudging first
-				fmt.Printf("Deacon heartbeat is %s old - nudging session\n", age.Round(time.Minute))
-				_ = tm.NudgeSession(deaconSession, "HEALTH_CHECK: heartbeat is stale, respond to confirm responsiveness")
-				return "nudge", "deacon-stale", nil
-			}
+	// Deacon session exists — in degraded mode, that's all we can check
+	// mechanically. The Boot agent handles deeper health assessment.
+	return "nothing", "", nil
+}
+
+// executeWarrants scans the warrants directory and executes any pending warrants.
+// It is called as a side effect during degraded triage, before the normal
+// Deacon health decision is made. Errors are non-fatal: a failed execution is
+// logged and skipped rather than aborting triage.
+func executeWarrants(warrantDir string, tm *tmux.Tmux) {
+	entries, err := os.ReadDir(warrantDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Printf("Warning: reading warrants dir: %v\n", err)
+		}
+		return
+	}
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".warrant.json") {
+			continue
+		}
+
+		path := filepath.Join(warrantDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Printf("Warning: reading warrant file %s: %v\n", entry.Name(), err)
+			continue
+		}
+
+		var w Warrant
+		if err := json.Unmarshal(data, &w); err != nil {
+			fmt.Printf("Warning: parsing warrant file %s: %v\n", entry.Name(), err)
+			continue
+		}
+
+		if w.Executed {
+			continue
+		}
+
+		if err := executeOneWarrant(&w, path, tm); err != nil {
+			fmt.Printf("Warning: executing warrant for %s: %v\n", w.Target, err)
+			continue
 		}
 	}
-
-	return "nothing", "", nil
 }
 
 // formatDurationAgo formats a duration for human display.

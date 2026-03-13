@@ -1,0 +1,22 @@
+{
+  "wave": 155,
+  "timestamp": "2026-03-08T15:58:00.000Z",
+  "target": "https://beta.numeruspro.com",
+  "headless": true,
+  "total": 3,
+  "passed": 3,
+  "failed": 0,
+  "allPassed": true,
+  "flows": [
+    {
+      "name": "wave-155-dark-theme-screens.flow.cjs",
+      "checks": [
+        { "name": "Login successful", "status": "pass" },
+        { "name": "Dashboard renders", "status": "pass" },
+        { "name": "Work orders page loaded", "status": "pass" }
+      ]
+    }
+  ],
+  "screenshots": ["dashboard.png", "work-orders.png"],
+  "notes": "Mobile-specific screen changes (EndOfDayScreen, LoginScreen, CrewClockInScreen, PhotoCaptureScreen) require Expo reload for device verification. Web dashboard confirms staging is healthy post-change."
+}

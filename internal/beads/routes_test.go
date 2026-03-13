@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/gastown/internal/config"
 )
 
 func TestGetPrefixForRig(t *testing.T) {
@@ -49,6 +51,33 @@ func TestGetPrefixForRig_NoRoutesFile(t *testing.T) {
 	result := GetPrefixForRig(tmpDir, "anything")
 	if result != "gt" {
 		t.Errorf("Expected default 'gt' when no routes file, got %q", result)
+	}
+}
+
+func TestGetPrefixForRig_RigsConfigFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write rigs.json with a non-gt prefix
+	rigsPath := filepath.Join(tmpDir, "mayor", "rigs.json")
+	if err := os.MkdirAll(filepath.Dir(rigsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.RigsConfig{
+		Version: config.CurrentRigsVersion,
+		Rigs: map[string]config.RigEntry{
+			"project_ideas": {
+				BeadsConfig: &config.BeadsConfig{Prefix: "pi"},
+			},
+		},
+	}
+	if err := config.SaveRigsConfig(rigsPath, cfg); err != nil {
+		t.Fatalf("SaveRigsConfig: %v", err)
+	}
+
+	result := GetPrefixForRig(tmpDir, "project_ideas")
+	if result != "pi" {
+		t.Errorf("Expected prefix from rigs config, got %q", result)
 	}
 }
 
@@ -100,7 +129,7 @@ func TestGetRigPathForPrefix(t *testing.T) {
 	}{
 		{"ap-", filepath.Join(tmpDir, "ai_platform/mayor/rig")},
 		{"gt-", filepath.Join(tmpDir, "gastown/mayor/rig")},
-		{"hq-", tmpDir}, // Town-level beads return townRoot
+		{"hq-", tmpDir},  // Town-level beads return townRoot
 		{"unknown-", ""}, // Unknown prefix returns empty
 		{"", ""},         // Empty prefix returns empty
 	}
@@ -184,6 +213,42 @@ func TestResolveHookDir(t *testing.T) {
 			if result != tc.expected {
 				t.Errorf("ResolveHookDir(%q, %q, %q) = %q, want %q",
 					tmpDir, tc.beadID, tc.hookWorkDir, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestGetRigNameForPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	routesContent := `{"prefix": "gt-", "path": "gastown/mayor/rig"}
+{"prefix": "bd-", "path": "beads/mayor/rig"}
+{"prefix": "hq-", "path": "."}
+`
+	if err := os.WriteFile(filepath.Join(beadsDir, "routes.jsonl"), []byte(routesContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		prefix   string
+		expected string
+	}{
+		{"gt-", "gastown"},
+		{"bd-", "beads"},
+		{"hq-", ""},       // Town-level, no specific rig
+		{"unknown-", ""},  // Not in routes
+		{"", ""},          // Empty prefix
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.prefix, func(t *testing.T) {
+			result := GetRigNameForPrefix(tmpDir, tc.prefix)
+			if result != tc.expected {
+				t.Errorf("GetRigNameForPrefix(%q, %q) = %q, want %q", tmpDir, tc.prefix, result, tc.expected)
 			}
 		})
 	}

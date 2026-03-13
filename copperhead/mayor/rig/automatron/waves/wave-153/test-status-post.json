@@ -1,0 +1,17 @@
+{
+  "wave": 153,
+  "timestamp": "2026-03-08T09:08:00.000Z",
+  "mode": "post",
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "allPassed": true,
+  "results": [
+    {
+      "name": "wave-153-theme-web.test.js",
+      "passed": true,
+      "tests": 22,
+      "output": "Wave 153 — Theme Standardizer Phase 2 Tests\n\nTheme Package:\n  ✅ tailwind-preset.ts exists\n  ✅ css-variables.ts exists\n  ✅ tailwind-colors.cjs exists\n  ✅ tailwind-preset exports fieldOpsColors\n  ✅ tailwind-preset exports fieldOpsPreset\n  ✅ css-variables exports generateCssVariableSheet\n  ✅ css-variables exports cssVarNames\n  ✅ index.ts re-exports css-variables\n  ✅ index.ts re-exports tailwind-preset\n  ✅ package.json has tailwind-preset export path\n  ✅ package.json has css-variables export path\n\nCJS Color Map:\n  ✅ tailwind-colors.cjs loads without error\n  ✅ tailwind-colors has all 26 tokens\n  ✅ tailwind-colors values use CSS variables\n\nWeb App Integration:\n  ✅ tailwind.config.cjs imports fieldOpsColors\n  ✅ tailwind.config.cjs extends colors with fo namespace\n  ✅ tailwind.config.cjs loads successfully\n  ✅ input.css has light theme CSS variables\n  ✅ input.css has dark theme CSS variables\n\nRegression:\n  ✅ tailwind.config.cjs still has darkMode class\n  ✅ input.css still has scrollbar styles\n  ✅ tokens.ts still exports original tokens\n\n22/22 tests passed"
+    }
+  ]
+}

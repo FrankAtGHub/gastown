@@ -1,0 +1,31 @@
+{
+  "wave": 153,
+  "timestamp": "2026-03-08T09:10:00.000Z",
+  "target": "https://beta.numeruspro.com",
+  "headless": true,
+  "total": 4,
+  "passed": 4,
+  "failed": 0,
+  "flows": [
+    {
+      "name": "css-variables-injected",
+      "passed": true,
+      "message": "CSS variables present in deployed app: --fo-background=#f8fafc, --fo-primary=#1e40af, --fo-text=#0f172a"
+    },
+    {
+      "name": "dashboard-renders",
+      "passed": true,
+      "message": "Dashboard page loads and renders correctly with theme CSS variables"
+    },
+    {
+      "name": "work-orders-renders",
+      "passed": true,
+      "message": "Work orders page loads and renders correctly"
+    },
+    {
+      "name": "tailwind-config-loads",
+      "passed": true,
+      "message": "tailwind.config.cjs loads with 26 fo-* color tokens mapped to CSS variables"
+    }
+  ]
+}

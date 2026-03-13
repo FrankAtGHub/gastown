@@ -31,11 +31,13 @@ type ConfigResult struct {
 // SystemDefaults contains compiled-in default values.
 // These are the fallback when no other layer provides a value.
 var SystemDefaults = map[string]interface{}{
-	"status":              "operational",
-	"auto_restart":        true,
-	"max_polecats":        10,
-	"priority_adjustment": 0,
-	"dnd":                 false,
+	"status":                  "operational",
+	"auto_restart":            true,
+	"auto_start_on_up":        false, // If true, rig agents start on gt up even when docked
+	"max_polecats":            10,
+	"priority_adjustment":     0,
+	"dnd":                     false,
+	"polecat_branch_template": "", // Empty = use default behavior (polecat/{name}/...)
 }
 
 // StackingKeys defines which keys use stacking semantics (values add up).
@@ -163,8 +165,6 @@ func (r *Rig) GetStringConfig(key string) string {
 // getBeadLabel reads a label value from the rig identity bead.
 // Returns nil if the rig bead doesn't exist or the label is not set.
 func (r *Rig) getBeadLabel(key string) interface{} {
-	townRoot := filepath.Dir(r.Path)
-
 	// Get the rig's beads prefix
 	prefix := "gt" // default
 	if r.Config != nil && r.Config.Prefix != "" {
@@ -176,7 +176,7 @@ func (r *Rig) getBeadLabel(key string) interface{} {
 
 	// Load the bead
 	beadsDir := beads.ResolveBeadsDir(r.Path)
-	bd := beads.NewWithBeadsDir(townRoot, beadsDir)
+	bd := beads.NewWithBeadsDir(r.Path, beadsDir)
 
 	issue, err := bd.Show(rigBeadID)
 	if err != nil {

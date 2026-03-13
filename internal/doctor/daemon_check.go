@@ -20,6 +20,7 @@ func NewDaemonCheck() *DaemonCheck {
 			BaseCheck: BaseCheck{
 				CheckName:        "daemon",
 				CheckDescription: "Check if Gas Town daemon is running",
+				CheckCategory:    CategoryInfrastructure,
 			},
 		},
 	}
@@ -67,6 +68,10 @@ func (c *DaemonCheck) Run(ctx *CheckContext) *CheckResult {
 
 // Fix starts the daemon.
 func (c *DaemonCheck) Fix(ctx *CheckContext) error {
+	if ctx.NoStart {
+		return ErrSkippedNoStart
+	}
+
 	// Find gt executable
 	gtPath, err := os.Executable()
 	if err != nil {

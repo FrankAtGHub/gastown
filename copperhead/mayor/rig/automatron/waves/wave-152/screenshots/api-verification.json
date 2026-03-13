@@ -1,0 +1,23 @@
+{
+  "session": {
+    "success": true,
+    "session": {
+      "id": "e4cc4f2d-dfb9-48ea-8bcc-8ae815040583",
+      "token": "972cd4c58b9e842084511dd4c6075d47d5a64ffbb1b9db54d3f7b15b3d6aa594",
+      "expiresAt": "2026-03-08T09:00:14.542Z",
+      "qrUrl": "https://tech.numeruspro.com/clock-in/?token=972cd4c58b9e842084511dd4c6075d47d5a64ffbb1b9db54d3f7b15b3d6aa594"
+    }
+  },
+  "verify": {
+    "success": true,
+    "workOrder": {
+      "id": "2e2001ee-5702-4a04-88a4-29781be796f2",
+      "work_order_number": "WO-MOB-0001",
+      "title": "GFCI Outlet Installation - Kitchen",
+      "address": "",
+      "customer_name": "John Smith"
+    },
+    "expiresAt": "2026-03-08T09:00:14.542Z"
+  },
+  "timestamp": "2026-03-08T08:55:14.704Z"
+}

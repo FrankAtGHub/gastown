@@ -11,16 +11,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/steveyegge/gastown/internal/constants"
 )
 
-// convoyIDPattern validates convoy IDs to prevent SQL injection
+// convoyIDPattern validates convoy IDs.
 var convoyIDPattern = regexp.MustCompile(`^hq-[a-zA-Z0-9-]+$`)
-
-// convoySubprocessTimeout is the timeout for bd and sqlite3 calls in the convoy panel.
-// Prevents TUI freezing if these commands hang.
-const convoySubprocessTimeout = 5 * time.Second
 
 // Convoy represents a convoy's status for the dashboard
 type Convoy struct {
@@ -90,7 +89,7 @@ func FetchConvoys(townRoot string) (*ConvoyState, error) {
 func listConvoys(beadsDir, status string) ([]convoyListItem, error) {
 	listArgs := []string{"list", "--type=convoy", "--status=" + status, "--json"}
 
-	ctx, cancel := context.WithTimeout(context.Background(), convoySubprocessTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.BdSubprocessTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bd", listArgs...) //nolint:gosec // G204: args are constructed internally
@@ -150,84 +149,6 @@ func enrichConvoy(beadsDir string, item convoyListItem) Convoy {
 	return convoy
 }
 
-type trackedStatus struct {
-	ID     string
-	Status string
-}
-
-// getTrackedIssueStatus queries tracked issues and their status
-func getTrackedIssueStatus(beadsDir, convoyID string) []trackedStatus {
-	// Validate convoyID to prevent SQL injection
-	if !convoyIDPattern.MatchString(convoyID) {
-		return nil
-	}
-
-	dbPath := filepath.Join(beadsDir, "beads.db")
-
-	ctx, cancel := context.WithTimeout(context.Background(), convoySubprocessTimeout)
-	defer cancel()
-
-	// Query tracked dependencies from SQLite
-	// convoyID is validated above to match ^hq-[a-zA-Z0-9-]+$
-	cmd := exec.CommandContext(ctx, "sqlite3", "-json", dbPath, //nolint:gosec // G204: convoyID is validated against strict pattern
-		fmt.Sprintf(`SELECT depends_on_id FROM dependencies WHERE issue_id = '%s' AND type = 'tracks'`, convoyID))
-
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return nil
-	}
-
-	var deps []struct {
-		DependsOnID string `json:"depends_on_id"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &deps); err != nil {
-		return nil
-	}
-
-	var tracked []trackedStatus
-	for _, dep := range deps {
-		issueID := dep.DependsOnID
-
-		// Handle external reference format: external:rig:issue-id
-		if strings.HasPrefix(issueID, "external:") {
-			parts := strings.SplitN(issueID, ":", 3)
-			if len(parts) == 3 {
-				issueID = parts[2]
-			}
-		}
-
-		// Get issue status
-		status := getIssueStatus(issueID)
-		tracked = append(tracked, trackedStatus{ID: issueID, Status: status})
-	}
-
-	return tracked
-}
-
-// getIssueStatus fetches just the status of an issue
-func getIssueStatus(issueID string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), convoySubprocessTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "bd", "show", issueID, "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
-		return "unknown"
-	}
-
-	var issues []struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &issues); err != nil || len(issues) == 0 {
-		return "unknown"
-	}
-
-	return issues[0].Status
-}
-
 // Convoy panel styles
 var (
 	ConvoyPanelStyle = lipgloss.NewStyle().
@@ -273,6 +194,8 @@ func (m *Model) renderConvoyPanel() string {
 }
 
 // renderConvoys renders the convoy panel content
+// renderConvoys renders the convoy status content.
+// Caller must hold m.mu.
 func (m *Model) renderConvoys() string {
 	if m.convoyState == nil {
 		return AgentIdleStyle.Render("Loading convoys...")
@@ -310,10 +233,11 @@ func renderConvoyLine(c Convoy, landed bool) string {
 	// Format: "  hq-xyz  Title       2/4 ●●○○" or "  hq-xyz  Title       ✓ 2h ago"
 	id := ConvoyIDStyle.Render(c.ID)
 
-	// Truncate title if too long
+	// Truncate title if too long (rune-safe to avoid splitting multi-byte UTF-8)
 	title := c.Title
-	if len(title) > 20 {
-		title = title[:17] + "..."
+	if utf8.RuneCountInString(title) > 20 {
+		runes := []rune(title)
+		title = string(runes[:17]) + "..."
 	}
 	title = ConvoyNameStyle.Render(title)
 
@@ -350,4 +274,3 @@ func renderProgressBar(completed, total int) string {
 	bar := strings.Repeat("●", filled) + strings.Repeat("○", displayTotal-filled)
 	return ConvoyProgressStyle.Render(bar)
 }
-

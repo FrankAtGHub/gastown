@@ -3,13 +3,17 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/daemon"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/workspace"
 )
 
 var initForce bool
@@ -80,6 +84,29 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("   ✓ Updated .git/info/exclude\n")
 	}
 
+	// Register custom beads types for Gas Town (agent, role, rig, convoy, slot).
+	// This is best-effort: if beads isn't installed or DB doesn't exist, we skip.
+	// The doctor check will catch missing types later.
+	if err := registerCustomTypes(cwd); err != nil {
+		fmt.Printf("   %s Could not register custom types: %v\n",
+			style.Dim.Render("⚠"), err)
+	} else {
+		fmt.Printf("   ✓ Registered custom beads types\n")
+	}
+
+	// Auto-configure the six-stage Dolt lifecycle with sensible defaults.
+	// This sets up reaper, compactor, doctor, backup, and maintenance patrols
+	// in mayor/daemon.json so they run automatically. Only fills in missing
+	// config — never overwrites existing user settings.
+	if townRoot, err := workspace.FindFromCwd(); err == nil {
+		if err := daemon.EnsureLifecycleConfigFile(townRoot); err != nil {
+			fmt.Printf("   %s Could not configure lifecycle defaults: %v\n",
+				style.Dim.Render("⚠"), err)
+		} else {
+			fmt.Printf("   ✓ Configured Dolt lifecycle (reaper, compactor, doctor, backup)\n")
+		}
+	}
+
 	fmt.Printf("\n%s Rig initialized with %d directories.\n",
 		style.Bold.Render("✓"), created)
 	fmt.Println()
@@ -87,7 +114,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  1. Add this rig to a town: %s\n",
 		style.Dim.Render("gt rig add <name> <git-url>"))
 	fmt.Printf("  2. Create a polecat: %s\n",
-		style.Dim.Render("gt polecat add <name>"))
+		style.Dim.Render("gt polecat identity add <rig> <name>"))
 
 	return nil
 }
@@ -112,7 +139,9 @@ func updateGitExclude(repoPath string) error {
 		return nil // Already configured
 	}
 
-	// Append agent dirs
+	// Append agent dirs with leading '/' to anchor at repo root.
+	// Without the anchor, patterns like 'refinery/' match at any depth
+	// and would hide source code directories like 'internal/refinery/'.
 	additions := "\n# Gas Town agent directories\n"
 	for _, dir := range rig.AgentDirs {
 		// Get first component (e.g., "polecats" from "polecats")
@@ -121,9 +150,40 @@ func updateGitExclude(repoPath string) error {
 		if base == "." {
 			base = dir
 		}
-		additions += base + "/\n"
+		additions += "/" + base + "/\n"
 	}
 
 	// Write back
 	return os.WriteFile(excludePath, append(content, []byte(additions)...), 0644)
+}
+
+// registerCustomTypes registers Gas Town custom issue types with beads.
+// This is best-effort: returns nil if beads isn't available or DB doesn't exist.
+// Handles gracefully: beads not installed, no .beads directory, or config errors.
+func registerCustomTypes(workDir string) error {
+	// Check if bd command is available
+	if _, err := exec.LookPath("bd"); err != nil {
+		return nil // beads not installed, skip silently
+	}
+
+	// Check if .beads directory exists
+	beadsDir := filepath.Join(workDir, ".beads")
+	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
+		return nil // no beads DB yet, skip silently
+	}
+
+	// Try to set custom types
+	cmd := exec.Command("bd", "config", "set", "types.custom", constants.BeadsCustomTypes)
+	cmd.Dir = workDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check for common expected errors
+		outStr := string(output)
+		if strings.Contains(outStr, "not initialized") ||
+			strings.Contains(outStr, "no such file") {
+			return nil // DB not initialized, skip silently
+		}
+		return fmt.Errorf("%s", strings.TrimSpace(outStr))
+	}
+	return nil
 }

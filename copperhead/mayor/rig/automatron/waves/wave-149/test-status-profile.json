@@ -1,0 +1,113 @@
+{
+  "wave": 149,
+  "phase": "test-design",
+  "timestamp": "2026-03-08T06:25:45.795Z",
+  "tests": [
+    {
+      "name": "PersonalInfoScreen.tsx imports useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "MyVehicleScreen.tsx imports useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "TimeEntriesListScreen.tsx imports useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "DocumentsScreen.tsx imports useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "NotificationsScreen.tsx imports useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "HelpScreen.tsx imports useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "PersonalInfoScreen.tsx calls useThemeStyles()",
+      "pass": true
+    },
+    {
+      "name": "MyVehicleScreen.tsx calls useThemeStyles()",
+      "pass": true
+    },
+    {
+      "name": "TimeEntriesListScreen.tsx calls useThemeStyles()",
+      "pass": true
+    },
+    {
+      "name": "DocumentsScreen.tsx calls useThemeStyles()",
+      "pass": true
+    },
+    {
+      "name": "NotificationsScreen.tsx calls useThemeStyles()",
+      "pass": true
+    },
+    {
+      "name": "HelpScreen.tsx calls useThemeStyles()",
+      "pass": true
+    },
+    {
+      "name": "PersonalInfoScreen.tsx has no hardcoded light-mode colors",
+      "pass": true
+    },
+    {
+      "name": "MyVehicleScreen.tsx has no hardcoded light-mode colors",
+      "pass": true
+    },
+    {
+      "name": "TimeEntriesListScreen.tsx has no hardcoded light-mode colors",
+      "pass": true
+    },
+    {
+      "name": "DocumentsScreen.tsx has no hardcoded light-mode colors",
+      "pass": true
+    },
+    {
+      "name": "NotificationsScreen.tsx has no hardcoded light-mode colors",
+      "pass": true
+    },
+    {
+      "name": "HelpScreen.tsx has no hardcoded light-mode colors",
+      "pass": true
+    },
+    {
+      "name": "PersonalInfoScreen.tsx uses colors.* for styling",
+      "pass": true
+    },
+    {
+      "name": "MyVehicleScreen.tsx uses colors.* for styling",
+      "pass": true
+    },
+    {
+      "name": "TimeEntriesListScreen.tsx uses colors.* for styling",
+      "pass": true
+    },
+    {
+      "name": "DocumentsScreen.tsx uses colors.* for styling",
+      "pass": true
+    },
+    {
+      "name": "NotificationsScreen.tsx uses colors.* for styling",
+      "pass": true
+    },
+    {
+      "name": "HelpScreen.tsx uses colors.* for styling",
+      "pass": true
+    },
+    {
+      "name": "SettingsScreen.tsx (reference) still uses useThemeStyles",
+      "pass": true
+    },
+    {
+      "name": "TruckInventoryScreen.tsx (reference) still uses useThemeStyles",
+      "pass": true
+    }
+  ],
+  "passed": 26,
+  "total": 26
+}

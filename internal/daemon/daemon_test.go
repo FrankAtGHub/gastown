@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -206,6 +210,33 @@ func TestSaveLoadState_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestListPolecatWorktrees_SkipsHiddenDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	polecatsDir := filepath.Join(tmpDir, "some-rig", "polecats")
+
+	if err := os.MkdirAll(filepath.Join(polecatsDir, ".claude"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(polecatsDir, "furiosa"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(polecatsDir, "not-a-dir.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	polecats, err := listPolecatWorktrees(polecatsDir)
+	if err != nil {
+		t.Fatalf("listPolecatWorktrees returned error: %v", err)
+	}
+
+	if slices.Contains(polecats, ".claude") {
+		t.Fatalf("expected hidden dir .claude to be ignored, got %v", polecats)
+	}
+	if !slices.Contains(polecats, "furiosa") {
+		t.Fatalf("expected furiosa to be included, got %v", polecats)
+	}
+}
+
 // NOTE: TestIsWitnessSession removed - isWitnessSession function was deleted
 // as part of ZFC cleanup. Witness poking is now Deacon's responsibility.
 
@@ -244,5 +275,281 @@ func TestLifecycleRequest_Serialization(t *testing.T) {
 	}
 	if loaded.Action != request.Action {
 		t.Errorf("Action mismatch: got %q, want %q", loaded.Action, request.Action)
+	}
+}
+
+func TestIsShutdownInProgress_NoLockFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	d := &Daemon{
+		config: &Config{TownRoot: tmpDir},
+	}
+
+	// No lock file exists - should return false
+	if d.isShutdownInProgress() {
+		t.Error("expected false when lock file doesn't exist")
+	}
+}
+
+func TestIsShutdownInProgress_StaleLockFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockDir := filepath.Join(tmpDir, "daemon")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(lockDir, "shutdown.lock")
+
+	// Create a stale lock file (not actually locked)
+	if err := os.WriteFile(lockPath, []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Daemon{
+		config: &Config{TownRoot: tmpDir},
+	}
+
+	// File exists but not locked - should return false
+	if d.isShutdownInProgress() {
+		t.Error("expected false when lock file exists but is not locked")
+	}
+
+	// File should still exist - flock files are never removed to prevent
+	// a race where concurrent callers lock different inodes
+	if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+		t.Error("expected lock file to be preserved (flock files should not be removed)")
+	}
+}
+
+func TestIsShutdownInProgress_ActiveLock(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockDir := filepath.Join(tmpDir, "daemon")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(lockDir, "shutdown.lock")
+
+	// Create and hold the lock (simulating active shutdown)
+	lock := flock.New(lockPath)
+	locked, err := lock.TryLock()
+	if err != nil {
+		t.Fatalf("failed to acquire lock: %v", err)
+	}
+	if !locked {
+		t.Fatal("expected to acquire lock")
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	d := &Daemon{
+		config: &Config{TownRoot: tmpDir},
+	}
+
+	// File exists and is locked - should return true
+	if !d.isShutdownInProgress() {
+		t.Error("expected true when lock file is actively held")
+	}
+
+	// File should still exist (we're still holding the lock)
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("lock file should still exist: %v", err)
+	}
+}
+
+// TestDaemon_StartsManagerAndScanner verifies that the convoy manager (event-driven + stranded scan)
+// starts and stops correctly when used as the daemon does.
+func TestDaemon_StartsManagerAndScanner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows")
+	}
+
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+
+	manager := NewConvoyManager(townRoot, func(string, ...interface{}) {}, "gt", 1*time.Hour, nil, nil, nil)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("manager Start: %v", err)
+	}
+	manager.Stop()
+}
+
+// TestDaemon_StopsManagerAndScanner verifies that stopping the convoy manager
+// completes without blocking (e.g. context cancellation works).
+func TestDaemon_StopsManagerAndScanner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows")
+	}
+
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+
+	manager := NewConvoyManager(townRoot, func(string, ...interface{}) {}, "gt", 1*time.Hour, nil, nil, nil)
+	if err := manager.Start(); err != nil {
+		t.Fatalf("manager Start: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		manager.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() did not complete within 5s")
+	}
+}
+
+// TestIsRunningFromPID_StalePIDReturnsNoError verifies that isRunningFromPID
+// returns (false, 0, nil) — not an error — when it finds and removes a stale
+// PID file. This is the fix for GH#2107: `gt daemon start` was treating the
+// stale cleanup as an error, showing help text instead of starting the daemon.
+func TestIsRunningFromPID_StalePIDReturnsNoError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	daemonDir := filepath.Join(tmpDir, "daemon")
+	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a PID file pointing to a process that doesn't exist.
+	// PID 2^22-1 (4194303) is extremely unlikely to be in use.
+	stalePID := 4194303
+	pidFile := filepath.Join(daemonDir, "daemon.pid")
+	if _, err := writePIDFile(pidFile, stalePID); err != nil {
+		t.Fatal(err)
+	}
+
+	running, pid, err := isRunningFromPID(tmpDir)
+	if err != nil {
+		t.Errorf("isRunningFromPID should not return error for stale PID, got: %v", err)
+	}
+	if running {
+		t.Error("expected running=false for stale PID")
+	}
+	if pid != 0 {
+		t.Errorf("expected pid=0, got %d", pid)
+	}
+
+	// PID file should have been removed
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Error("expected stale PID file to be removed")
+	}
+}
+
+// TestIsRunningFromPID_NoPIDFile verifies clean return when no PID file exists.
+func TestIsRunningFromPID_NoPIDFile(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	daemonDir := filepath.Join(tmpDir, "daemon")
+	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	running, pid, err := isRunningFromPID(tmpDir)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if running {
+		t.Error("expected running=false")
+	}
+	if pid != 0 {
+		t.Errorf("expected pid=0, got %d", pid)
+	}
+}
+
+// TestIsRunningFromPID_LiveProcess verifies detection of a live process.
+func TestIsRunningFromPID_LiveProcess(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	daemonDir := filepath.Join(tmpDir, "daemon")
+	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use our own PID — guaranteed alive
+	pidFile := filepath.Join(daemonDir, "daemon.pid")
+	if _, err := writePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+
+	running, pid, err := isRunningFromPID(tmpDir)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !running {
+		t.Error("expected running=true for live process")
+	}
+	if pid != os.Getpid() {
+		t.Errorf("expected pid=%d, got %d", os.Getpid(), pid)
+	}
+}
+
+func TestHasPendingEvents_EmptyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	eventDir := filepath.Join(tmpDir, "events", "refinery")
+	if err := os.MkdirAll(eventDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Daemon{config: &Config{TownRoot: tmpDir}}
+
+	if d.hasPendingEvents("refinery") {
+		t.Error("expected false for empty event directory")
+	}
+}
+
+func TestHasPendingEvents_MissingDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	d := &Daemon{config: &Config{TownRoot: tmpDir}}
+
+	if d.hasPendingEvents("refinery") {
+		t.Error("expected false when event directory doesn't exist")
+	}
+}
+
+func TestHasPendingEvents_WithEventFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	eventDir := filepath.Join(tmpDir, "events", "refinery")
+	if err := os.MkdirAll(eventDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an event file
+	eventFile := filepath.Join(eventDir, "1234567890-1-12345.event")
+	if err := os.WriteFile(eventFile, []byte(`{"type":"MQ_SUBMIT"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Daemon{config: &Config{TownRoot: tmpDir}}
+
+	if !d.hasPendingEvents("refinery") {
+		t.Error("expected true when .event files exist")
+	}
+}
+
+func TestHasPendingEvents_IgnoresNonEventFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	eventDir := filepath.Join(tmpDir, "events", "refinery")
+	if err := os.MkdirAll(eventDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a non-event file (e.g., .tmp or .lock)
+	if err := os.WriteFile(filepath.Join(eventDir, "temp.lock"), []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &Daemon{config: &Config{TownRoot: tmpDir}}
+
+	if d.hasPendingEvents("refinery") {
+		t.Error("expected false when only non-.event files exist")
 	}
 }

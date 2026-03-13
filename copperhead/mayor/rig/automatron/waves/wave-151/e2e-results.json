@@ -1,0 +1,21 @@
+{
+  "wave": 151,
+  "timestamp": "2026-03-08T08:25:30.000Z",
+  "target": "https://beta.numeruspro.com",
+  "headless": true,
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "flows": [
+    {
+      "name": "wave-151-crew-self",
+      "passed": true,
+      "message": "17/17 static analysis tests passed — controller, routes, API service, WO detail screen, regression checks"
+    },
+    {
+      "name": "wave-151-self-clock",
+      "passed": true,
+      "message": "7/7 E2E checks passed — login, find WO, crew setup, self-clock-in, double-clock-in rejected (409), self-clock-out, non-crew rejected (403)"
+    }
+  ]
+}

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/steveyegge/gastown/internal/config"
 )
 
 // Route represents a prefix-to-path routing rule.
@@ -35,7 +37,9 @@ func LoadRoutes(beadsDir string) ([]Route, error) {
 
 	var routes []Route
 	scanner := bufio.NewScanner(file)
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue // Skip empty lines and comments
@@ -43,7 +47,8 @@ func LoadRoutes(beadsDir string) ([]Route, error) {
 
 		var route Route
 		if err := json.Unmarshal([]byte(line), &route); err != nil {
-			continue // Skip malformed lines
+			fmt.Fprintf(os.Stderr, "Warning: skipping malformed route at %s:%d: %v\n", routesPath, lineNum, err)
+			continue
 		}
 		if route.Prefix != "" && route.Path != "" {
 			routes = append(routes, route)
@@ -111,28 +116,50 @@ func RemoveRoute(townRoot string, prefix string) error {
 
 // WriteRoutes writes routes to routes.jsonl, overwriting existing content.
 func WriteRoutes(beadsDir string, routes []Route) error {
+	// Ensure beads directory exists
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		return fmt.Errorf("creating beads directory: %w", err)
+	}
+
 	routesPath := filepath.Join(beadsDir, RoutesFileName)
 
-	file, err := os.Create(routesPath)
+	tmp, err := os.CreateTemp(beadsDir, ".routes-*.tmp")
 	if err != nil {
-		return fmt.Errorf("creating routes file: %w", err)
+		return fmt.Errorf("creating temp routes file: %w", err)
 	}
-	defer file.Close()
+	tmpPath := tmp.Name()
 
 	for _, r := range routes {
 		data, err := json.Marshal(r)
 		if err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
 			return fmt.Errorf("marshaling route: %w", err)
 		}
-		if _, err := file.Write(data); err != nil {
+		if _, err := tmp.Write(data); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
 			return fmt.Errorf("writing route: %w", err)
 		}
-		if _, err := file.WriteString("\n"); err != nil {
+		if _, err := tmp.WriteString("\n"); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
 			return fmt.Errorf("writing newline: %w", err)
 		}
 	}
 
-	return nil
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("syncing routes file: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("closing routes file: %w", err)
+	}
+
+	return os.Rename(tmpPath, routesPath)
 }
 
 // GetTownBeadsPath returns the path to town-level beads directory.
@@ -150,7 +177,7 @@ func GetPrefixForRig(townRoot, rigName string) string {
 	beadsDir := filepath.Join(townRoot, ".beads")
 	routes, err := LoadRoutes(beadsDir)
 	if err != nil || routes == nil {
-		return "gt" // Default prefix
+		return config.GetRigPrefix(townRoot, rigName)
 	}
 
 	// Look for a route where the path starts with the rig name
@@ -163,7 +190,7 @@ func GetPrefixForRig(townRoot, rigName string) string {
 		}
 	}
 
-	return "gt" // Default prefix
+	return config.GetRigPrefix(townRoot, rigName)
 }
 
 // FindConflictingPrefixes checks for duplicate prefixes in routes.
@@ -225,6 +252,31 @@ func GetRigPathForPrefix(townRoot, prefix string) string {
 				return townRoot // Town-level beads
 			}
 			return filepath.Join(townRoot, r.Path)
+		}
+	}
+
+	return ""
+}
+
+// GetRigNameForPrefix returns the rig name that owns a given bead prefix.
+// For example, "gt-" returns "gastown", "bd-" returns "beads".
+// Returns empty string if the prefix is town-level (path=".") or not found in routes.
+func GetRigNameForPrefix(townRoot, prefix string) string {
+	beadsDir := filepath.Join(townRoot, ".beads")
+	routes, err := LoadRoutes(beadsDir)
+	if err != nil || routes == nil {
+		return ""
+	}
+
+	for _, r := range routes {
+		if r.Prefix == prefix {
+			if r.Path == "." {
+				return "" // Town-level bead, no specific rig
+			}
+			parts := strings.SplitN(r.Path, "/", 2)
+			if len(parts) > 0 {
+				return parts[0]
+			}
 		}
 	}
 
