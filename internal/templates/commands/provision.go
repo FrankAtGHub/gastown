@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/steveyegge/gastown/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/config"
 )
 
 //go:embed bodies/*.md

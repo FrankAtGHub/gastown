@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/rig"
 )
 
 func TestManagerAddAndGet(t *testing.T) {

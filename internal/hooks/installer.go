@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/steveyegge/gastown/internal/hookutil"
+	"github.com/FrankAtGHub/night-city/internal/hookutil"
 )
 
 //go:embed templates/*

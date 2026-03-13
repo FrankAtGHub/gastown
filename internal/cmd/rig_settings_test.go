@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/config"
 )
 
 // setupTestRigForSettings creates a test rig for settings testing.

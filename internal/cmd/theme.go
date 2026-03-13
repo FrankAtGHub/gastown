@@ -8,11 +8,11 @@ import (
 
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/session"
-	"github.com/steveyegge/gastown/internal/tmux"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 var (
@@ -230,7 +230,7 @@ func detectCurrentRig() string {
 	}
 
 	// Try to extract from tmux session name
-	if sessName := detectCurrentSession(); sessName != "" {
+	if sessName := ""; sessName != "" {
 		if identity, err := session.ParseSessionName(sessName); err == nil && identity.Rig != "" {
 			return identity.Rig
 		}

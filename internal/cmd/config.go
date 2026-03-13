@@ -8,14 +8,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/daemon"
-	"github.com/steveyegge/gastown/internal/scheduler/capacity"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/daemon"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 var configCmd = &cobra.Command{
@@ -565,7 +563,7 @@ func runConfigAgentEmailDomain(cmd *cobra.Command, args []string) error {
 		// Show current domain
 		domain := townSettings.AgentEmailDomain
 		if domain == "" {
-			domain = DefaultAgentEmailDomain
+			domain = "nightcity.local"
 		}
 		fmt.Printf("Agent email domain: %s\n", style.Bold.Render(domain))
 		fmt.Printf("\nExample: gastown/crew/jack → gastown.crew.jack@%s\n", domain)
@@ -727,31 +725,13 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		if n < -1 {
 			return fmt.Errorf("invalid value for %s: must be >= -1 (-1 = direct dispatch, 0 = direct dispatch, N > 0 = deferred)", key)
 		}
-		if townSettings.Scheduler == nil {
-			townSettings.Scheduler = capacity.DefaultSchedulerConfig()
-		}
-		townSettings.Scheduler.MaxPolecats = &n
+		return fmt.Errorf("scheduler config removed in Night City")
 
 	case "scheduler.batch_size":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid value for %s: expected positive integer", key)
-		}
-		if townSettings.Scheduler == nil {
-			townSettings.Scheduler = capacity.DefaultSchedulerConfig()
-		}
-		townSettings.Scheduler.BatchSize = &n
+		return fmt.Errorf("scheduler config removed in Night City")
 
 	case "scheduler.spawn_delay":
-		// Validate it parses as a duration
-		_, err := time.ParseDuration(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected Go duration, e.g. 2s, 500ms)", key, err)
-		}
-		if townSettings.Scheduler == nil {
-			townSettings.Scheduler = capacity.DefaultSchedulerConfig()
-		}
-		townSettings.Scheduler.SpawnDelay = value
+		return fmt.Errorf("scheduler config removed in Night City")
 
 	case "maintenance.window", "maintenance.interval", "maintenance.threshold":
 		return setMaintenanceConfig(townRoot, key, value)
@@ -769,12 +749,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 			patrolCfg.Env = make(map[string]string)
 		}
 		patrolCfg.Env["GT_DOLT_PORT"] = value
-		if err := daemon.SavePatrolConfig(townRoot, patrolCfg); err != nil {
-			return fmt.Errorf("saving daemon.json: %w", err)
-		}
-		fmt.Printf("Set GT_DOLT_PORT = %s in mayor/daemon.json\n", style.Bold.Render(value))
-		fmt.Printf("  %s\n", style.Dim.Render("Restart the daemon for the change to take effect: gt daemon restart"))
-		return nil
+		return fmt.Errorf("dolt.port config removed in Night City")
 
 	default:
 		if strings.HasPrefix(key, "lifecycle.") {
@@ -826,26 +801,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 			value = "claude"
 		}
 
-	case "scheduler.max_polecats":
-		scfg := townSettings.Scheduler
-		if scfg == nil {
-			scfg = capacity.DefaultSchedulerConfig()
-		}
-		value = strconv.Itoa(scfg.GetMaxPolecats())
-
-	case "scheduler.batch_size":
-		scfg := townSettings.Scheduler
-		if scfg == nil {
-			scfg = capacity.DefaultSchedulerConfig()
-		}
-		value = strconv.Itoa(scfg.GetBatchSize())
-
-	case "scheduler.spawn_delay":
-		scfg := townSettings.Scheduler
-		if scfg == nil {
-			scfg = capacity.DefaultSchedulerConfig()
-		}
-		value = scfg.GetSpawnDelay().String()
+	case "scheduler.max_polecats", "scheduler.batch_size", "scheduler.spawn_delay":
+		return fmt.Errorf("scheduler config removed in Night City")
 
 	case "maintenance.window", "maintenance.interval", "maintenance.threshold":
 		return getMaintenanceConfig(townRoot, key)
@@ -874,329 +831,22 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 
 // setMaintenanceConfig sets a maintenance.* key in daemon.json (patrol config).
 func setMaintenanceConfig(townRoot, key, value string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-	if patrolConfig == nil {
-		patrolConfig = &daemon.DaemonPatrolConfig{
-			Type:    "daemon-patrol-config",
-			Version: 1,
-		}
-	}
-	if patrolConfig.Patrols == nil {
-		patrolConfig.Patrols = &daemon.PatrolsConfig{}
-	}
-	if patrolConfig.Patrols.ScheduledMaintenance == nil {
-		patrolConfig.Patrols.ScheduledMaintenance = &daemon.ScheduledMaintenanceConfig{}
-	}
-	mc := patrolConfig.Patrols.ScheduledMaintenance
-
-	switch key {
-	case "maintenance.window":
-		// Validate HH:MM format
-		parts := strings.SplitN(value, ":", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid window format %q: expected HH:MM (e.g., 03:00)", value)
-		}
-		hour, err := strconv.Atoi(parts[0])
-		if err != nil || hour < 0 || hour > 23 {
-			return fmt.Errorf("invalid hour in %q: expected 0-23", value)
-		}
-		minute, err := strconv.Atoi(parts[1])
-		if err != nil || minute < 0 || minute > 59 {
-			return fmt.Errorf("invalid minute in %q: expected 0-59", value)
-		}
-		mc.Window = fmt.Sprintf("%02d:%02d", hour, minute)
-		mc.Enabled = true // Setting window enables the patrol
-
-	case "maintenance.interval":
-		switch value {
-		case "daily", "weekly", "monthly":
-			mc.Interval = value
-		default:
-			// Try parsing as Go duration
-			_, err := time.ParseDuration(value)
-			if err != nil {
-				return fmt.Errorf("invalid interval %q: expected daily, weekly, monthly, or Go duration (e.g., 48h)", value)
-			}
-			mc.Interval = value
-		}
-
-	case "maintenance.threshold":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid threshold %q: expected positive integer", value)
-		}
-		mc.Threshold = &n
-	}
-
-	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
-		return fmt.Errorf("saving daemon config: %w", err)
-	}
-
-	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-	if key == "maintenance.window" {
-		fmt.Printf("Scheduled maintenance enabled (window: %s, interval: %s)\n",
-			mc.Window, mc.Interval)
-		if mc.Interval == "" {
-			fmt.Println("Hint: set interval with: gt config set maintenance.interval daily")
-		}
-	}
-	return nil
+	return errNotImplemented("maintenance config")
 }
 
 // getMaintenanceConfig gets a maintenance.* key from daemon.json (patrol config).
 func getMaintenanceConfig(townRoot, key string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-
-	var value string
-	switch key {
-	case "maintenance.window":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			value = patrolConfig.Patrols.ScheduledMaintenance.Window
-		}
-		if value == "" {
-			value = "(not set)"
-		}
-
-	case "maintenance.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			value = patrolConfig.Patrols.ScheduledMaintenance.Interval
-		}
-		if value == "" {
-			value = "daily"
-		}
-
-	case "maintenance.threshold":
-		threshold := 1000 // default
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.ScheduledMaintenance != nil {
-			if patrolConfig.Patrols.ScheduledMaintenance.Threshold != nil {
-				threshold = *patrolConfig.Patrols.ScheduledMaintenance.Threshold
-			}
-		}
-		value = strconv.Itoa(threshold)
-	}
-
-	fmt.Println(value)
-	return nil
+	return errNotImplemented("maintenance config")
 }
 
 // setLifecycleConfig sets a lifecycle.* key in daemon.json.
 func setLifecycleConfig(townRoot, key, value string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-	if patrolConfig == nil {
-		patrolConfig = daemon.DefaultLifecycleConfig()
-	}
-	if patrolConfig.Patrols == nil {
-		patrolConfig.Patrols = &daemon.PatrolsConfig{}
-	}
-
-	switch key {
-	// Reaper
-	case "lifecycle.reaper.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{}
-		}
-		patrolConfig.Patrols.WispReaper.Enabled = b
-
-	case "lifecycle.reaper.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.WispReaper.IntervalStr = value
-
-	case "lifecycle.reaper.delete_age":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.WispReaper == nil {
-			patrolConfig.Patrols.WispReaper = &daemon.WispReaperConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.WispReaper.DeleteAgeStr = value
-
-	// Compactor
-	case "lifecycle.compactor.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{}
-		}
-		patrolConfig.Patrols.CompactorDog.Enabled = b
-
-	case "lifecycle.compactor.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.CompactorDog.IntervalStr = value
-
-	case "lifecycle.compactor.threshold":
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
-			return fmt.Errorf("invalid threshold for %s: expected positive integer", key)
-		}
-		if patrolConfig.Patrols.CompactorDog == nil {
-			patrolConfig.Patrols.CompactorDog = &daemon.CompactorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.CompactorDog.Threshold = n
-
-	// Doctor
-	case "lifecycle.doctor.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.DoctorDog == nil {
-			patrolConfig.Patrols.DoctorDog = &daemon.DoctorDogConfig{}
-		}
-		patrolConfig.Patrols.DoctorDog.Enabled = b
-
-	case "lifecycle.doctor.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.DoctorDog == nil {
-			patrolConfig.Patrols.DoctorDog = &daemon.DoctorDogConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.DoctorDog.IntervalStr = value
-
-	// Backup (controls both JSONL and Dolt backup)
-	case "lifecycle.backup.enabled":
-		b, err := parseBool(value)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w (expected true/false)", key, err)
-		}
-		if patrolConfig.Patrols.JsonlGitBackup == nil {
-			patrolConfig.Patrols.JsonlGitBackup = &daemon.JsonlGitBackupConfig{}
-		}
-		patrolConfig.Patrols.JsonlGitBackup.Enabled = b
-		if patrolConfig.Patrols.DoltBackup == nil {
-			patrolConfig.Patrols.DoltBackup = &daemon.DoltBackupConfig{}
-		}
-		patrolConfig.Patrols.DoltBackup.Enabled = b
-
-	case "lifecycle.backup.interval":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("invalid duration for %s: %w", key, err)
-		}
-		if patrolConfig.Patrols.JsonlGitBackup == nil {
-			patrolConfig.Patrols.JsonlGitBackup = &daemon.JsonlGitBackupConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.JsonlGitBackup.IntervalStr = value
-		if patrolConfig.Patrols.DoltBackup == nil {
-			patrolConfig.Patrols.DoltBackup = &daemon.DoltBackupConfig{Enabled: true}
-		}
-		patrolConfig.Patrols.DoltBackup.IntervalStr = value
-
-	default:
-		return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
-	}
-
-	if err := daemon.SavePatrolConfig(townRoot, patrolConfig); err != nil {
-		return fmt.Errorf("saving daemon config: %w", err)
-	}
-
-	fmt.Printf("Set %s = %s\n", style.Bold.Render(key), value)
-	return nil
+	return errNotImplemented("lifecycle config")
 }
 
 // getLifecycleConfig gets a lifecycle.* key from daemon.json.
 func getLifecycleConfig(townRoot, key string) error {
-	patrolConfig := daemon.LoadPatrolConfig(townRoot)
-
-	var value string
-	switch key {
-	// Reaper
-	case "lifecycle.reaper.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.WispReaper.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.reaper.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil && patrolConfig.Patrols.WispReaper.IntervalStr != "" {
-			value = patrolConfig.Patrols.WispReaper.IntervalStr
-		} else {
-			value = "30m (default)"
-		}
-
-	case "lifecycle.reaper.delete_age":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.WispReaper != nil && patrolConfig.Patrols.WispReaper.DeleteAgeStr != "" {
-			value = patrolConfig.Patrols.WispReaper.DeleteAgeStr
-		} else {
-			value = "168h (default, 7 days)"
-		}
-
-	// Compactor
-	case "lifecycle.compactor.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.CompactorDog.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.compactor.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil && patrolConfig.Patrols.CompactorDog.IntervalStr != "" {
-			value = patrolConfig.Patrols.CompactorDog.IntervalStr
-		} else {
-			value = "24h (default)"
-		}
-
-	case "lifecycle.compactor.threshold":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.CompactorDog != nil && patrolConfig.Patrols.CompactorDog.Threshold > 0 {
-			value = strconv.Itoa(patrolConfig.Patrols.CompactorDog.Threshold)
-		} else {
-			value = "500 (default)"
-		}
-
-	// Doctor
-	case "lifecycle.doctor.enabled":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoctorDog != nil {
-			value = strconv.FormatBool(patrolConfig.Patrols.DoctorDog.Enabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.doctor.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoctorDog != nil && patrolConfig.Patrols.DoctorDog.IntervalStr != "" {
-			value = patrolConfig.Patrols.DoctorDog.IntervalStr
-		} else {
-			value = "5m (default)"
-		}
-
-	// Backup
-	case "lifecycle.backup.enabled":
-		jsonlEnabled := patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.JsonlGitBackup != nil && patrolConfig.Patrols.JsonlGitBackup.Enabled
-		doltEnabled := patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.DoltBackup != nil && patrolConfig.Patrols.DoltBackup.Enabled
-		if jsonlEnabled || doltEnabled {
-			value = fmt.Sprintf("jsonl=%v dolt=%v", jsonlEnabled, doltEnabled)
-		} else {
-			value = "false (not configured)"
-		}
-
-	case "lifecycle.backup.interval":
-		if patrolConfig != nil && patrolConfig.Patrols != nil && patrolConfig.Patrols.JsonlGitBackup != nil && patrolConfig.Patrols.JsonlGitBackup.IntervalStr != "" {
-			value = patrolConfig.Patrols.JsonlGitBackup.IntervalStr
-		} else {
-			value = "15m (default)"
-		}
-
-	default:
-		return fmt.Errorf("unknown lifecycle key: %q\n\nSupported lifecycle keys:\n  lifecycle.reaper.enabled\n  lifecycle.reaper.interval\n  lifecycle.reaper.delete_age\n  lifecycle.compactor.enabled\n  lifecycle.compactor.interval\n  lifecycle.compactor.threshold\n  lifecycle.doctor.enabled\n  lifecycle.doctor.interval\n  lifecycle.backup.enabled\n  lifecycle.backup.interval", key)
-	}
-
-	fmt.Println(value)
-	return nil
+	return errNotImplemented("lifecycle config")
 }
 
 // parseBool parses a boolean string (true/false, yes/no, 1/0).

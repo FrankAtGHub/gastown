@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/steveyegge/gastown/internal/lock"
-	"github.com/steveyegge/gastown/internal/util"
+	"github.com/FrankAtGHub/night-city/internal/lock"
+	"github.com/FrankAtGHub/night-city/internal/util"
 )
 
 const (

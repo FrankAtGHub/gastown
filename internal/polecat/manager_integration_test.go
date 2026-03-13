@@ -10,10 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/testutil"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/testutil"
 )
 
 var polecatManagerIntegrationCounter atomic.Int32

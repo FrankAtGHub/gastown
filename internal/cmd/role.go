@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 // Environment variables for role detection

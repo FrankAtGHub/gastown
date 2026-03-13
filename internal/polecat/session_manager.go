@@ -13,15 +13,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/runtime"
-	"github.com/steveyegge/gastown/internal/session"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/runtime"
+	"github.com/FrankAtGHub/night-city/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 // debugSession logs non-fatal errors during session startup when GT_DEBUG_SESSION=1.
@@ -741,8 +740,7 @@ func (m *SessionManager) StopAll(force bool) error {
 // on a given issue. This enables cross-rig beads resolution via routes.jsonl.
 // This is the core fix for GitHub issue #1056.
 func (m *SessionManager) resolveBeadsDir(issueID, fallbackDir string) string {
-	townRoot := filepath.Dir(m.rig.Path)
-	return beads.ResolveHookDir(townRoot, issueID, fallbackDir)
+	return fallbackDir // beads removed
 }
 
 // validateIssue checks that an issue exists and is not in a terminal state.
@@ -769,7 +767,7 @@ func (m *SessionManager) validateIssue(issueID, workDir string) error {
 	if len(issues) == 0 {
 		return fmt.Errorf("%w: %s", ErrIssueInvalid, issueID)
 	}
-	if beads.IssueStatus(issues[0].Status).IsTerminal() {
+	if issues[0].Status == "closed" { // beads removed
 		return fmt.Errorf("%w: %s has terminal status %s", ErrIssueInvalid, issueID, issues[0].Status)
 	}
 	return nil

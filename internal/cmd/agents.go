@@ -10,12 +10,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/lock"
-	"github.com/steveyegge/gastown/internal/session"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/tmux"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/lock"
+	"github.com/FrankAtGHub/night-city/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 // AgentType represents the type of Gas Town agent.

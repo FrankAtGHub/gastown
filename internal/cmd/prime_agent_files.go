@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/style"
 )
 
 // injectAgentFiles reads and outputs agent identity/memory files during prime.

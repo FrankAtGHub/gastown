@@ -5,6 +5,11 @@ import (
 	"fmt"
 )
 
+// errNotImplemented returns an error for commands not yet ported to Night City.
+func errNotImplemented(cmd string) error {
+	return fmt.Errorf("%s: not yet implemented in Night City", cmd)
+}
+
 // SilentExitError signals that the command should exit with a specific code
 // without printing an error message. This is used for scripting purposes
 // where exit codes convey status (e.g., "no mail" = exit 1).

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/polecat"
+	"github.com/FrankAtGHub/night-city/internal/polecat"
 )
 
 func TestSessionInfoJSONOutput(t *testing.T) {

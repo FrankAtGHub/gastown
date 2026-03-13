@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/events"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 // TownSession represents a town-level tmux session.
@@ -59,14 +58,6 @@ func stopTownSessionInternal(t *tmux.Tmux, ts TownSession, force bool) (bool, er
 		_ = t.SendKeysRaw(ts.SessionID, "C-c")
 		WaitForSessionExit(t, ts.SessionID, constants.GracefulShutdownTimeout)
 	}
-
-	// Log pre-death event for crash investigation (before killing)
-	reason := "user shutdown"
-	if force {
-		reason = "forced shutdown"
-	}
-	_ = events.LogFeed(events.TypeSessionDeath, ts.SessionID,
-		events.SessionDeathPayload(ts.SessionID, ts.Name, reason, "gt down"))
 
 	// Kill the session.
 	// Use KillSessionWithProcesses to ensure all descendant processes are killed.

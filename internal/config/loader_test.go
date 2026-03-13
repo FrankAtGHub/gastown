@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/constants"
 )
 
 // skipIfAgentBinaryMissing skips the test if any of the specified agent binaries

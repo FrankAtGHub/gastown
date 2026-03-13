@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/constants"
 )
 
 // AgentEnvConfig specifies the configuration for generating agent environment variables.
@@ -198,7 +198,7 @@ func AgentEnv(cfg AgentEnvConfig) map[string]string {
 	// When gt sling is invoked from within a Claude Code session, CLAUDECODE=1
 	// leaks through tmux's global environment into new polecat sessions, causing
 	// Claude Code to refuse to start with a "nested sessions" error.
-	// See: https://github.com/steveyegge/gastown/issues/1666
+	// See: https://github.com/FrankAtGHub/night-city/issues/1666
 	env["CLAUDECODE"] = ""
 
 	// Propagate Claude Code's own OTEL telemetry when GT telemetry is enabled.

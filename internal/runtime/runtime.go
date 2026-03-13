@@ -5,12 +5,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/steveyegge/gastown/internal/cli"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/hookutil"
-	"github.com/steveyegge/gastown/internal/hooks"
-	"github.com/steveyegge/gastown/internal/templates/commands"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/cli"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/hookutil"
+	"github.com/FrankAtGHub/night-city/internal/hooks"
+	"github.com/FrankAtGHub/night-city/internal/templates/commands"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 // EnsureSettingsForRole provisions all agent-specific configuration for a role.

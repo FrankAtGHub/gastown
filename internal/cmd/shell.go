@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/shell"
-	"github.com/steveyegge/gastown/internal/state"
-	"github.com/steveyegge/gastown/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/shell"
+	"github.com/FrankAtGHub/night-city/internal/state"
+	"github.com/FrankAtGHub/night-city/internal/style"
 )
 
 var shellCmd = &cobra.Command{

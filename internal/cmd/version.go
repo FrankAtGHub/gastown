@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/version"
+	"github.com/FrankAtGHub/night-city/internal/version"
 )
 
 // Version information - set at build time via ldflags

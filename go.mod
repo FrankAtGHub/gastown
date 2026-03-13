@@ -1,4 +1,4 @@
-module github.com/steveyegge/gastown
+module github.com/FrankAtGHub/night-city
 
 go 1.25.6
 

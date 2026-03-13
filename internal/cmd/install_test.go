@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/beads"
 )
 
 func TestEnsureBeadsConfigYAML_CreatesWhenMissing(t *testing.T) {

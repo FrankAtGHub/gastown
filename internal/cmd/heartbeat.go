@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/polecat"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/polecat"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 var heartbeatCmd = &cobra.Command{

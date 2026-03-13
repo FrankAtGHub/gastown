@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/scheduler/capacity"
 )
 
 // TownConfig represents the main town identity (mayor/town.json).
@@ -88,9 +87,6 @@ type TownSettings struct {
 	// Actual model assignments live in RoleAgents and Agents.
 	// Values: "standard", "economy", "budget", or empty for custom configs.
 	CostTier string `json:"cost_tier,omitempty"`
-
-	// Scheduler configures the capacity scheduler for polecat dispatch.
-	Scheduler *capacity.SchedulerConfig `json:"scheduler,omitempty"`
 
 	// Operational configures operational thresholds (timeouts, retries, intervals).
 	// These were previously hardcoded as Go constants throughout the codebase.

@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/daemon"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/templates"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/daemon"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/templates"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 var daemonCmd = &cobra.Command{
@@ -339,11 +339,7 @@ func runDaemonRun(cmd *cobra.Command, args []string) error {
 	}
 
 	config := daemon.DefaultConfig(townRoot)
-	d, err := daemon.New(config)
-	if err != nil {
-		return fmt.Errorf("creating daemon: %w", err)
-	}
-
+	d := daemon.New(config)
 	return d.Run()
 }
 
@@ -408,31 +404,10 @@ func runDaemonClearBackoff(cmd *cobra.Command, args []string) error {
 }
 
 func runDaemonRotateLogs(cmd *cobra.Command, args []string) error {
-	townRoot, err := workspace.FindFromCwdOrError()
-	if err != nil {
+	if _, err := workspace.FindFromCwdOrError(); err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	var result *daemon.RotateLogsResult
-	if daemonRotateLogsForce {
-		result = daemon.ForceRotateLogs(townRoot)
-	} else {
-		result = daemon.RotateLogs(townRoot)
-	}
-
-	for _, path := range result.Rotated {
-		fmt.Printf("%s Rotated %s\n", style.Bold.Render("✓"), path)
-	}
-	for _, path := range result.Skipped {
-		fmt.Printf("  %s %s (below threshold)\n", style.Dim.Render("·"), path)
-	}
-	for _, err := range result.Errors {
-		fmt.Printf("  %s %v\n", style.Warning.Render("⚠"), err)
-	}
-
-	if len(result.Rotated) == 0 && len(result.Errors) == 0 {
-		fmt.Printf("%s No logs needed rotation\n", style.Bold.Render("✓"))
-	}
-
+	fmt.Printf("%s Log rotation not yet implemented in Night City\n", style.Bold.Render("·"))
 	return nil
 }

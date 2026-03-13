@@ -13,8 +13,8 @@ import (
 
 	"regexp"
 
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 // PrefixRegistry maps beads prefixes to rig names and vice versa.

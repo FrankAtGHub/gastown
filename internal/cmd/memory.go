@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/style"
 )
 
 var memoryFileContext string

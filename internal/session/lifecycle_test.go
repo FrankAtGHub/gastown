@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/config"
 )
 
 func TestStartSession_RequiresSessionID(t *testing.T) {

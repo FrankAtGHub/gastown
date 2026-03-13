@@ -37,7 +37,7 @@ func RefinerySessionName(rigPrefix string) string {
 
 // ArchitectSessionName returns the session name for a rig's Architect agent.
 func ArchitectSessionName(rig string) string {
-	return fmt.Sprintf("%s%s-architect", Prefix, rig)
+	return fmt.Sprintf("gt-%s-architect", rig)
 }
 
 // CrewSessionName returns the session name for a crew worker in a rig.

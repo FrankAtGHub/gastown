@@ -12,7 +12,7 @@ import (
 	"sync"
 	"text/template"
 
-	"github.com/steveyegge/gastown/internal/templates/commands"
+	"github.com/FrankAtGHub/night-city/internal/templates/commands"
 )
 
 var (

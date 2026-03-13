@@ -4,8 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/telemetry"
 )
 
 // injectWorkContextTest is a helper that calls injectWorkContext with OTel

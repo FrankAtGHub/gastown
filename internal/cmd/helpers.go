@@ -8,13 +8,16 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
+
+// AnnotationPolecatSafe marks commands that are safe to run inside polecat sessions.
+const AnnotationPolecatSafe = "polecat_safe"
 
 // inferRigFromCwd tries to determine the rig from the current directory.
 func inferRigFromCwd(townRoot string) (string, error) {
@@ -83,7 +86,7 @@ func isInSameTmuxSocket() bool {
 // If already inside tmux, uses switch-client instead of attach-session.
 // Uses syscall.Exec to replace the Go process with tmux for direct terminal
 // control, and passes -u for UTF-8 support regardless of locale settings.
-// See: https://github.com/steveyegge/gastown/issues/1219
+// See: https://github.com/FrankAtGHub/night-city/issues/1219
 func attachToTmuxSession(sessionID string) error {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
@@ -234,4 +237,16 @@ func warnIfNotDefaultBranch(dir, roleName, rigPath string) {
 		branch,
 		defaultBranch)
 	fmt.Printf("  Use --reset to switch to %s, or continue at your own risk.\n\n", defaultBranch)
+}
+
+// WorkItem is a minimal replacement for beads.Issue used in prime injection.
+// TODO: Replace with Night City's file-based work tracking.
+type WorkItem struct {
+	ID          string
+	Title       string
+	Status      string
+	Description string
+	Assignee    string
+	HookBead    string
+	Labels      map[string]string
 }

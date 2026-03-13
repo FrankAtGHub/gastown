@@ -8,12 +8,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/daemon"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/style"
 )
 
 var initForce bool
@@ -98,14 +96,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// This sets up reaper, compactor, doctor, backup, and maintenance patrols
 	// in mayor/daemon.json so they run automatically. Only fills in missing
 	// config — never overwrites existing user settings.
-	if townRoot, err := workspace.FindFromCwd(); err == nil {
-		if err := daemon.EnsureLifecycleConfigFile(townRoot); err != nil {
-			fmt.Printf("   %s Could not configure lifecycle defaults: %v\n",
-				style.Dim.Render("⚠"), err)
-		} else {
-			fmt.Printf("   ✓ Configured Dolt lifecycle (reaper, compactor, doctor, backup)\n")
-		}
-	}
+	// Lifecycle config removed in Night City
 
 	fmt.Printf("\n%s Rig initialized with %d directories.\n",
 		style.Bold.Render("✓"), created)

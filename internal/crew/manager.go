@@ -11,16 +11,15 @@ import (
 
 	"github.com/gofrs/flock"
 
-	"github.com/steveyegge/gastown/internal/beads"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/runtime"
-	"github.com/steveyegge/gastown/internal/session"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/tmux"
-	"github.com/steveyegge/gastown/internal/util"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/runtime"
+	"github.com/FrankAtGHub/night-city/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/util"
 )
 
 // Common errors
@@ -274,10 +273,7 @@ func (m *Manager) addLocked(name string, createBranch bool) (*CrewWorker, error)
 	// Provision PRIME.md with Gas Town context for this worker.
 	// This is the fallback if SessionStart hook fails - ensures crew workers
 	// always have GUPP and essential Gas Town context.
-	if err := beads.ProvisionPrimeMDForWorktree(crewPath); err != nil {
-		// Non-fatal - crew can still work via hook, warn but don't fail
-		style.PrintWarning("could not provision PRIME.md: %v", err)
-	}
+	// PRIME.md provisioning removed (beads gutted)
 
 	// Copy overlay files from .runtime/overlay/ to crew root.
 	// This allows services to have .env and other config files at their root.
@@ -655,8 +651,7 @@ type PristineResult struct {
 // setupSharedBeads creates a redirect file so the crew worker uses the rig's shared .beads database.
 // This eliminates the need for git sync between crew clones - all crew members share one database.
 func (m *Manager) setupSharedBeads(crewPath string) error {
-	townRoot := filepath.Dir(m.rig.Path)
-	return beads.SetupRedirect(townRoot, crewPath)
+	return nil // beads removed
 }
 
 // SessionName returns the tmux session name for a crew member.
@@ -711,7 +706,7 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 	// Compute environment variables BEFORE creating the session.
 	// These are passed via tmux -e flags so the initial shell inherits the correct
 	// env from the start, preventing parent env (e.g., GT_ROLE=mayor) from leaking
-	// into crew sessions. See: https://github.com/steveyegge/gastown/issues/1289
+	// into crew sessions. See: https://github.com/FrankAtGHub/night-city/issues/1289
 	envVars := config.AgentEnv(config.AgentEnvConfig{
 		Role:             "crew",
 		Rig:              m.rig.Name,
@@ -825,7 +820,7 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 	// The -e flags set session-level env BEFORE the shell starts, ensuring the
 	// initial shell inherits the correct GT_ROLE (not the parent's).
 	// See: https://github.com/anthropics/gastown/issues/280 (race condition fix)
-	// See: https://github.com/steveyegge/gastown/issues/1289 (env inheritance fix)
+	// See: https://github.com/FrankAtGHub/night-city/issues/1289 (env inheritance fix)
 	if err := t.NewSessionWithCommandAndEnv(sessionID, worker.ClonePath, claudeCmd, envVars); err != nil {
 		return fmt.Errorf("creating session: %w", err)
 	}

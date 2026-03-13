@@ -10,8 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steveyegge/gastown/internal/doltserver"
-	"github.com/steveyegge/gastown/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/rig"
 )
 
 func TestAgentStartResult_Fields(t *testing.T) {

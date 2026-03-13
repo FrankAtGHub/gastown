@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 func TestAgentsCmd_DefaultRunE(t *testing.T) {

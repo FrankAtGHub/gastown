@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/steveyegge/gastown/internal/util"
+	"github.com/FrankAtGHub/night-city/internal/util"
 )
 
 // StateManager handles loading and saving agent state to disk.

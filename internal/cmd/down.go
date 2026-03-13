@@ -11,18 +11,16 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/daemon"
-	"github.com/steveyegge/gastown/internal/doltserver"
-	"github.com/steveyegge/gastown/internal/events"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/polecat"
-	"github.com/steveyegge/gastown/internal/rig"
-	"github.com/steveyegge/gastown/internal/session"
-	"github.com/steveyegge/gastown/internal/style"
-	"github.com/steveyegge/gastown/internal/tmux"
-	"github.com/steveyegge/gastown/internal/workspace"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/daemon"
+	"github.com/FrankAtGHub/night-city/internal/git"
+	"github.com/FrankAtGHub/night-city/internal/polecat"
+	"github.com/FrankAtGHub/night-city/internal/rig"
+	"github.com/FrankAtGHub/night-city/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/workspace"
 )
 
 const (
@@ -233,30 +231,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Phase 4b: Stop Dolt server
-	doltCfg := doltserver.DefaultConfig(townRoot)
-	if _, statErr := os.Stat(doltCfg.DataDir); statErr == nil {
-		doltRunning, doltPid, doltErr := doltserver.IsRunning(townRoot)
-		if doltErr != nil {
-			printDownStatus("Dolt", false, fmt.Sprintf("status check failed: %v", doltErr))
-			allOK = false
-		} else if downDryRun {
-			if doltRunning {
-				printDownStatus("Dolt", true, fmt.Sprintf("would stop (PID %d)", doltPid))
-			}
-		} else {
-			if doltRunning {
-				if err := doltserver.Stop(townRoot); err != nil {
-					printDownStatus("Dolt", false, err.Error())
-					allOK = false
-				} else {
-					printDownStatus("Dolt", true, fmt.Sprintf("stopped (was PID %d)", doltPid))
-				}
-			} else {
-				printDownStatus("Dolt", true, "not running")
-			}
-		}
-	}
+	// Dolt server removed in Night City
 
 	// Phase 4c: Clean up legacy "default" socket sessions.
 	// Old binaries created sessions on the "default" tmux socket. After
@@ -290,7 +265,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Println("Cleaning up orphaned Claude processes...")
-		cleanupOrphanedClaude(defaultDownOrphanGraceSecs)
+		// orphan cleanup removed
 
 		time.Sleep(500 * time.Millisecond)
 		respawned := verifyShutdown(t, townRoot)
@@ -362,7 +337,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 		if downNuke {
 			stoppedServices = append(stoppedServices, "tmux-server")
 		}
-		_ = events.LogFeed(events.TypeHalt, "gt", events.HaltPayload(stoppedServices))
+// events removed
 	} else {
 		fmt.Printf("%s Some services failed to stop\n", style.Bold.Render("✗"))
 		return fmt.Errorf("not all services stopped")
@@ -495,7 +470,7 @@ func verifyShutdown(t *tmux.Tmux, townRoot string) []string {
 	if pidData, err := os.ReadFile(pidFile); err == nil {
 		var pid int
 		if _, err := fmt.Sscanf(string(pidData), "%d", &pid); err == nil {
-			if isProcessRunning(pid) {
+			if false {
 				respawned = append(respawned, fmt.Sprintf("gt daemon (PID %d)", pid))
 			}
 		}

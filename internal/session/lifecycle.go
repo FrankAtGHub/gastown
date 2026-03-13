@@ -10,12 +10,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/git"
-	"github.com/steveyegge/gastown/internal/runtime"
-	"github.com/steveyegge/gastown/internal/telemetry"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/constants"
+	"github.com/FrankAtGHub/night-city/internal/runtime"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 // SessionConfig describes how to create and start a tmux session.
@@ -145,9 +143,7 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (_ *StartResult, retErr error
 	// Generate the GASTA run ID — the root identifier for all telemetry emitted
 	// by this agent session and its subprocesses (bd, mail, …).
 	runID := uuid.New().String()
-	ctx := telemetry.WithRunID(context.Background(), runID)
-
-	defer func() { telemetry.RecordSessionStart(ctx, cfg.SessionID, cfg.Role, retErr) }()
+	_ = runID // telemetry removed
 	if cfg.SessionID == "" {
 		return nil, fmt.Errorf("SessionID is required")
 	}
@@ -297,44 +293,11 @@ func StartSession(t *tmux.Tmux, cfg SessionConfig) (_ *StartResult, retErr error
 		}
 	}
 
-	// Record the agent instantiation event (GASTA root span).
-	// Done after session creation so we only emit on success.
-	RecordAgentInstantiateFromDir(ctx, runID, runtimeConfig.ResolvedAgent,
-		cfg.Role, cfg.AgentName, cfg.SessionID, cfg.RigName, cfg.TownRoot, "", cfg.WorkDir)
-
 	return &StartResult{RuntimeConfig: runtimeConfig, RunID: runID}, nil
 }
 
-// RecordAgentInstantiateFromDir resolves the git branch/commit from workDir and
-// emits the agent.instantiate root telemetry event. resolvedAgent defaults to
-// "claudecode" when empty. Use this instead of calling telemetry.RecordAgentInstantiate
-// directly to avoid duplicating the agentType/git-lookup boilerplate.
+// RecordAgentInstantiateFromDir is a no-op placeholder (telemetry removed).
 func RecordAgentInstantiateFromDir(ctx context.Context, runID, resolvedAgent, role, agentName, sessionID, rigName, townRoot, issueID, workDir string) {
-	agentType := resolvedAgent
-	if agentType == "" {
-		agentType = "claudecode"
-	}
-	branch, commit := "", ""
-	if g := git.NewGit(workDir); g != nil {
-		if b, err := g.CurrentBranch(); err == nil {
-			branch = b
-		}
-		if c, err := g.Rev("HEAD"); err == nil {
-			commit = c
-		}
-	}
-	telemetry.RecordAgentInstantiate(ctx, telemetry.AgentInstantiateInfo{
-		RunID:     runID,
-		AgentType: agentType,
-		Role:      role,
-		AgentName: agentName,
-		SessionID: sessionID,
-		RigName:   rigName,
-		TownRoot:  townRoot,
-		IssueID:   issueID,
-		GitBranch: branch,
-		GitCommit: commit,
-	})
 }
 
 // StopSession stops a tmux session with optional graceful shutdown.

@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/steveyegge/gastown/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/session"
 )
 
 func setupAssigneeTestRegistry(t *testing.T) {

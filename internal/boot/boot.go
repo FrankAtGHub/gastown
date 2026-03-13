@@ -4,7 +4,7 @@
 package boot
 
 import (
-	"github.com/steveyegge/gastown/internal/cli"
+	"github.com/FrankAtGHub/night-city/internal/cli"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/steveyegge/gastown/internal/config"
-	"github.com/steveyegge/gastown/internal/session"
-	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/FrankAtGHub/night-city/internal/config"
+	"github.com/FrankAtGHub/night-city/internal/session"
+	"github.com/FrankAtGHub/night-city/internal/tmux"
 )
 
 // MarkerFileName is the lock file for Boot startup coordination.
