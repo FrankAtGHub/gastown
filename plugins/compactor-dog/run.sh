@@ -24,7 +24,7 @@ DOLT_PORT="${DOLT_PORT:-3307}"
 DOLT_USER="${DOLT_USER:-root}"
 COMMIT_THRESHOLD="${COMMIT_THRESHOLD:-500}"
 # Default production databases (matches reaper.DefaultDatabases)
-DEFAULT_DBS="hq,bd,gt"
+DEFAULT_DBS="auto"
 DRY_RUN=false
 CHECK_ONLY=false
 LOGFILE=""
@@ -76,11 +76,11 @@ validate_name() {
   return 0
 }
 
-# Validate that a value looks like a Dolt commit hash (hex string).
+# Validate that a value looks like a Dolt commit hash (base32: lowercase alphanumeric).
 validate_hash() {
   local hash="$1"
   local context="$2"
-  if [[ ! "$hash" =~ ^[a-fA-F0-9]+$ ]]; then
+  if [[ ! "$hash" =~ ^[a-z0-9]+$ ]]; then
     log "ERROR: Unsafe $context hash rejected: '$hash'"
     return 1
   fi
@@ -162,10 +162,11 @@ REPORT=""
 while IFS= read -r DB; do
   [[ -z "$DB" ]] && continue
 
-  COUNT=$(dolt_query "$DB" "SELECT COUNT(*) AS cnt FROM dolt_log" 2>/dev/null | head -1)
+  COUNT=$(dolt_query "$DB" "SELECT COUNT(*) AS cnt FROM dolt_log" 2>/dev/null | head -1) || true
   if [[ -z "$COUNT" || "$COUNT" == "null" ]]; then
-    log "  $DB: ERROR querying commit count (skipping)"
-    REPORT="${REPORT}${DB}: error\n"
+    log "  $DB: not found or not queryable (skipping)"
+    REPORT="${REPORT}${DB}: not found\n"
+    SKIPPED+=("$DB")
     continue
   fi
 
