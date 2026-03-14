@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/FrankAtGHub/night-city/internal/engine/launcher"
@@ -50,10 +52,32 @@ func runTownSling(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading persona %q: %w", personaName, err)
 	}
 
-	// Set the task as the prompt
-	persona.Prompt = task
+	// Write task to agent's SESSION-STATE.md BEFORE launch
+	// The SessionStart hook will inject this into context
+	sessionStatePath := filepath.Join(townDir, "agents", personaName, "memory", "SESSION-STATE.md")
+	sessionState := fmt.Sprintf(`# Session State
+**Last Updated:** now
+**Current Task:** %s
+**Status:** ACTIVE
 
-	// Launch
+## Assignment
+%s
+
+## Working Context
+- Project: %s
+- Dispatched by: mayor
+- Execute this task immediately. Do not ask for confirmation.
+`, task, task, persona.ProjectDir)
+	os.WriteFile(sessionStatePath, []byte(sessionState), 0644)
+
+	// Also write the task to a prompt file that the launch script will pipe in
+	promptPath := filepath.Join(townDir, "agents", personaName, "prompt.txt")
+	os.WriteFile(promptPath, []byte(task+"\n"), 0644)
+
+	// Don't set Prompt on persona — launch interactively
+	// The SessionStart hook loads SESSION-STATE.md which has the task
+
+	// Launch in interactive mode
 	mgr, err := launcher.NewManager(cfg.Name, townDir)
 	if err != nil {
 		return err
@@ -72,24 +96,17 @@ func runTownSling(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Attach:  tmux attach -t %s\n", sess.TmuxName)
 	fmt.Printf("   Status:  gt town status\n")
 
+	// Wait for claude to start, then send the prompt via tmux
+	time.Sleep(3 * time.Second)
+	sendCmd := exec.Command("tmux", "send-keys", "-t", sess.TmuxName,
+		task, "Enter")
+	if err := sendCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "   Warning: could not send prompt to session: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   Attach manually and paste the task.\n")
+	}
+
 	// Log to work log
 	logToWorkLog(persona.ProjectDir, "sling", fmt.Sprintf("Dispatched %s: %s", personaName, task))
-
-	// Write task to agent's SESSION-STATE.md
-	sessionStatePath := filepath.Join(townDir, "agents", personaName, "memory", "SESSION-STATE.md")
-	sessionState := fmt.Sprintf(`# Session State
-**Last Updated:** %s
-**Current Task:** %s
-**Status:** ACTIVE
-
-## Assignment
-%s
-
-## Working Context
-- Project: %s
-- Dispatched by: mayor
-`, cmd.Root().Version, task, task, persona.ProjectDir)
-	os.WriteFile(sessionStatePath, []byte(sessionState), 0644)
 
 	return nil
 }

@@ -200,11 +200,8 @@ func (m *Manager) writeLaunchScript(p *Persona) (string, error) {
 		sb.WriteString(fmt.Sprintf(" --settings %q", agentSettingsPath))
 	}
 
-	// If a prompt is set, run in non-interactive (print) mode
-	// This keeps the agent running until the task is complete
-	if p.Prompt != "" {
-		sb.WriteString(fmt.Sprintf(" -p %q", p.Prompt))
-	}
+	// Prompt is handled via SESSION-STATE.md (injected by SessionStart hook)
+	// and optionally via tmux send-keys after session creation (see town sling)
 	sb.WriteString("\n")
 
 	scriptPath := filepath.Join(scriptsDir, p.Name+".sh")
