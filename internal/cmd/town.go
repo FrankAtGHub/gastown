@@ -176,7 +176,7 @@ func runTownStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	mgr, err := launcher.NewManager(cfg.Name)
+	mgr, err := launcher.NewManager(cfg.Name, townDir)
 	if err != nil {
 		return err
 	}
@@ -239,7 +239,7 @@ func runTownStop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	mgr, err := launcher.NewManager(cfg.Name)
+	mgr, err := launcher.NewManager(cfg.Name, townDir)
 	if err != nil {
 		return err
 	}

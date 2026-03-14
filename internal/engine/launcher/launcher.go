@@ -27,6 +27,9 @@ type Persona struct {
 	MCPServers []MCPServer       `yaml:"mcp_servers"` // MCP servers to connect
 	Env        map[string]string `yaml:"env"`         // environment variables
 	AutoStart  bool              `yaml:"auto_start"`  // start on `town start`
+	Model      string            `yaml:"model"`       // claude model override
+	Prompt     string            `yaml:"prompt"`      // initial prompt to send on startup
+	AllowPerms bool              `yaml:"allow_perms"` // skip permission prompts (dangerous)
 }
 
 // MCPServer defines an MCP server connection for a persona.
@@ -55,6 +58,9 @@ func LoadPersona(path string) (*Persona, error) {
 func LoadAllPersonas(dir string) ([]*Persona, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var personas []*Persona
@@ -80,13 +86,14 @@ type Session struct {
 
 // Manager handles launching and managing agent sessions via tmux.
 type Manager struct {
-	tmux       *gotmux.Tmux
-	townName   string
-	sessions   map[string]*Session // persona name → session
+	tmux     *gotmux.Tmux
+	townName string
+	townDir  string // .town directory for writing launch scripts
+	sessions map[string]*Session
 }
 
 // NewManager creates a launcher manager using the default tmux socket.
-func NewManager(townName string) (*Manager, error) {
+func NewManager(townName, townDir string) (*Manager, error) {
 	t, err := gotmux.DefaultTmux()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to tmux: %w", err)
@@ -94,6 +101,7 @@ func NewManager(townName string) (*Manager, error) {
 	return &Manager{
 		tmux:     t,
 		townName: townName,
+		townDir:  townDir,
 		sessions: make(map[string]*Session),
 	}, nil
 }
@@ -117,33 +125,22 @@ func (m *Manager) Launch(p *Persona) (*Session, error) {
 		}
 	}
 
-	// Build environment for the session
-	env := make([]string, 0, len(p.Env)+3)
-	env = append(env, fmt.Sprintf("GT_ROLE=%s", p.Name))
-	env = append(env, fmt.Sprintf("GT_TOWN=%s", m.townName))
-	if p.MemoryDir != "" {
-		env = append(env, fmt.Sprintf("GT_MEMORY_DIR=%s", p.MemoryDir))
-	}
-	for k, v := range p.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	// Build the claude command
-	claudeArgs := []string{"claude", "--dangerously-skip-permissions"}
-	if p.ClaudeMD != "" {
-		claudeArgs = append(claudeArgs, "--claude-md", p.ClaudeMD)
+	// Write a launch script (avoids shell quoting issues with gotmux)
+	scriptPath, err := m.writeLaunchScript(p)
+	if err != nil {
+		return nil, fmt.Errorf("writing launch script: %w", err)
 	}
 
 	workDir := p.ProjectDir
 	if workDir == "" {
-		workDir = "."
+		cwd, _ := os.Getwd()
+		workDir = cwd
 	}
 
-	// Create tmux session with claude code running in it
-	cmd := fmt.Sprintf("cd %s && %s %s", workDir, strings.Join(env, " "), strings.Join(claudeArgs, " "))
+	// Create tmux session running the launch script
 	sess, err := m.tmux.NewSession(&gotmux.SessionOptions{
-		Name:         name,
-		ShellCommand: cmd,
+		Name:           name,
+		ShellCommand:   "bash " + scriptPath,
 		StartDirectory: workDir,
 	})
 	if err != nil {
@@ -159,10 +156,69 @@ func (m *Manager) Launch(p *Persona) (*Session, error) {
 	return session, nil
 }
 
+// writeLaunchScript creates a bash script that sets env vars and launches claude.
+func (m *Manager) writeLaunchScript(p *Persona) (string, error) {
+	scriptsDir := filepath.Join(m.townDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		return "", err
+	}
+
+	var sb strings.Builder
+	sb.WriteString("#!/usr/bin/env bash\n")
+	sb.WriteString("# Auto-generated launch script for persona: " + p.Name + "\n\n")
+
+	// Environment variables (persona env can override defaults)
+	envMap := map[string]string{
+		"GT_ROLE": p.Name,
+		"GT_TOWN": m.townName,
+	}
+	if p.MemoryDir != "" {
+		envMap["GT_MEMORY_DIR"] = p.MemoryDir
+	}
+	for k, v := range p.Env {
+		envMap[k] = v
+	}
+	for k, v := range envMap {
+		sb.WriteString(fmt.Sprintf("export %s=%q\n", k, v))
+	}
+	sb.WriteString("\n")
+
+	// Build claude command
+	sb.WriteString("exec claude")
+	if p.AllowPerms {
+		sb.WriteString(" --dangerously-skip-permissions")
+	}
+	if p.Model != "" {
+		sb.WriteString(fmt.Sprintf(" --model %q", p.Model))
+	}
+	if p.Prompt != "" {
+		sb.WriteString(fmt.Sprintf(" --prompt %q", p.Prompt))
+	}
+	sb.WriteString("\n")
+
+	scriptPath := filepath.Join(scriptsDir, p.Name+".sh")
+	if err := os.WriteFile(scriptPath, []byte(sb.String()), 0755); err != nil {
+		return "", err
+	}
+
+	return scriptPath, nil
+}
+
 // Stop kills a running agent session.
 func (m *Manager) Stop(persona string) error {
 	sess, ok := m.sessions[persona]
 	if !ok {
+		// Try to find it by tmux session name even if not tracked
+		name := m.sessionName(persona)
+		sessions, err := m.tmux.ListSessions()
+		if err != nil {
+			return fmt.Errorf("no session for persona %q", persona)
+		}
+		for _, s := range sessions {
+			if s.Name == name {
+				return s.Kill()
+			}
+		}
 		return fmt.Errorf("no session for persona %q", persona)
 	}
 	if err := sess.TmuxSess.Kill(); err != nil {
@@ -183,20 +239,38 @@ func (m *Manager) List() []*Session {
 
 // IsRunning checks if a persona's session is still alive.
 func (m *Manager) IsRunning(persona string) bool {
-	sess, ok := m.sessions[persona]
-	if !ok {
-		return false
-	}
-	// Check if tmux session still exists
+	name := m.sessionName(persona)
 	sessions, err := m.tmux.ListSessions()
 	if err != nil {
 		return false
 	}
 	for _, s := range sessions {
-		if s.Name == sess.TmuxName {
+		if s.Name == name {
 			return true
 		}
 	}
+	// Clean up stale tracking
 	delete(m.sessions, persona)
 	return false
+}
+
+// DiscoverSessions scans tmux for existing town sessions and populates the sessions map.
+func (m *Manager) DiscoverSessions() {
+	prefix := m.townName + "-"
+	sessions, err := m.tmux.ListSessions()
+	if err != nil {
+		return
+	}
+	for _, s := range sessions {
+		if strings.HasPrefix(s.Name, prefix) {
+			personaName := strings.TrimPrefix(s.Name, prefix)
+			if _, ok := m.sessions[personaName]; !ok {
+				m.sessions[personaName] = &Session{
+					TmuxName: s.Name,
+					TmuxSess: s,
+					Persona:  &Persona{Name: personaName},
+				}
+			}
+		}
+	}
 }
