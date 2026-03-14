@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"os/exec"
+	"time"
+
 	"github.com/GianlucaP106/gotmux/gotmux"
 	"github.com/FrankAtGHub/night-city/internal/engine"
 	"github.com/FrankAtGHub/night-city/internal/engine/provision"
@@ -150,6 +153,15 @@ func (m *Manager) Launch(p *Persona) (*Session, error) {
 		TmuxSess: sess,
 	}
 	m.sessions[p.Name] = session
+
+	// Handle the workspace trust prompt automatically.
+	// Claude Code shows a trust dialog on first run in a directory.
+	// We press Enter after a short delay to confirm trust.
+	go func() {
+		time.Sleep(3 * time.Second)
+		exec.Command("tmux", "send-keys", "-t", name, "Enter").Run()
+	}()
+
 	return session, nil
 }
 
@@ -200,8 +212,6 @@ func (m *Manager) writeLaunchScript(p *Persona) (string, error) {
 		sb.WriteString(fmt.Sprintf(" --settings %q", agentSettingsPath))
 	}
 
-	// Prompt is handled via SESSION-STATE.md (injected by SessionStart hook)
-	// and optionally via tmux send-keys after session creation (see town sling)
 	sb.WriteString("\n")
 
 	scriptPath := filepath.Join(scriptsDir, p.Name+".sh")

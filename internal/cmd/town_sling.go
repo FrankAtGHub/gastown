@@ -96,13 +96,18 @@ func runTownSling(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Attach:  tmux attach -t %s\n", sess.TmuxName)
 	fmt.Printf("   Status:  gt town status\n")
 
-	// Wait for claude to start, then send the prompt via tmux
-	time.Sleep(3 * time.Second)
+	// Wait for claude to start (3s trust prompt + 5s startup), then send the task
+	fmt.Printf("   Waiting for agent to start...")
+	time.Sleep(8 * time.Second)
+
+	// Send the task as a message
 	sendCmd := exec.Command("tmux", "send-keys", "-t", sess.TmuxName,
 		task, "Enter")
 	if err := sendCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "   Warning: could not send prompt to session: %v\n", err)
+		fmt.Fprintf(os.Stderr, "\n   Warning: could not send prompt to session: %v\n", err)
 		fmt.Fprintf(os.Stderr, "   Attach manually and paste the task.\n")
+	} else {
+		fmt.Printf(" dispatched.\n")
 	}
 
 	// Log to work log
