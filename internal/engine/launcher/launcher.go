@@ -188,6 +188,18 @@ func (m *Manager) writeLaunchScript(p *Persona) (string, error) {
 	if p.Model != "" {
 		sb.WriteString(fmt.Sprintf(" --model %q", p.Model))
 	}
+
+	// Inject persona CLAUDE.md as system prompt
+	if p.ClaudeMD != "" {
+		sb.WriteString(fmt.Sprintf(" --append-system-prompt-file %q", p.ClaudeMD))
+	}
+
+	// Load provisioned settings (hooks for WAL, heartbeat, etc.)
+	agentSettingsPath := filepath.Join(m.townDir, "agents", p.Name, ".claude", "settings.json")
+	if _, err := os.Stat(agentSettingsPath); err == nil {
+		sb.WriteString(fmt.Sprintf(" --settings %q", agentSettingsPath))
+	}
+
 	if p.Prompt != "" {
 		sb.WriteString(fmt.Sprintf(" --prompt %q", p.Prompt))
 	}
