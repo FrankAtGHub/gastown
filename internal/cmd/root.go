@@ -37,39 +37,26 @@ across distributed teams of AI agents working on shared codebases.`, cmdName)
 }
 
 // Commands that don't require beads to be installed/checked.
-// These commands should work even when bd is missing or outdated.
+// Night City: most beads checks are dead, but keep the exempt list
+// for backwards compatibility during the transition.
 var beadsExemptCommands = map[string]bool{
 	"version":    true,
 	"help":       true,
 	"completion": true,
 	"crew":       true,
 	"polecat":    true,
-	"witness":    true,
-	"refinery":   true,
-	"architect":  true,
 	"status":     true,
-	"mail":       true,
-	"hook":       true,
 	"prime":      true,
-	"nudge":      true,
-	"seance":     true,
-	"doctor":     true,
-	"dolt":       true,
-	"handoff":    true,
-	"costs":      true,
-	"feed":       true,
 	"rig":        true,
 	"config":     true,
 	"install":    true,
 	"tap":        true,
-	"dnd":        true,
-	"signal":        true, // Hook signal handlers must be fast, handle beads internally
-	"metrics":       true, // Metrics reads local JSONL, no beads needed
-	"krc":           true, // KRC doesn't require beads
-	"run-migration":       true, // Migration orchestrator handles its own beads checks
-	"health":              true, // Health check doesn't require beads
-	"upgrade":             true, // Post-install migration orchestrator
-	"heartbeat":           true, // Heartbeat state update — must be fast and dependency-free
+	"metrics":    true,
+	"health":     true,
+	"heartbeat":  true,
+	"town":       true,
+	"agent":      true,
+	"memory":     true,
 }
 
 // Commands exempt from the town root branch warning.

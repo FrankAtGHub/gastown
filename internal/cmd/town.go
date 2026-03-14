@@ -126,12 +126,22 @@ func runTownInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Seed catalog with built-in persona templates
+	catalogDir := filepath.Join(townDir, "catalog")
+	seeded, err := catalog.SeedCatalog(catalogDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "   Warning: could not seed catalog: %v\n", err)
+	}
+
 	fmt.Printf("%s Town '%s' initialized\n\n", style.Bold.Render("✓"), name)
 	fmt.Printf("   Host:    %s\n", hostname)
 	fmt.Printf("   Project: %s\n", projectDir)
 	fmt.Printf("   Data:    %s\n", townDir)
 	fmt.Println()
 	fmt.Printf("   Created default persona: mayor\n")
+	if seeded > 0 {
+		fmt.Printf("   Seeded catalog with %d persona templates\n", seeded)
+	}
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Printf("  Add personas:  %s\n", style.Dim.Render("gt town add <name>"))

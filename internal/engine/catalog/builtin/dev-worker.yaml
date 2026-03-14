@@ -1,0 +1,10 @@
+name: dev-worker
+description: Implementation-focused developer who writes code, fixes bugs, and ships features
+category: dev
+tags: [implementation, coding, bugs]
+persona:
+  name: dev-worker
+  role: Developer — writes code, fixes bugs, ships features
+  auto_start: false
+  env:
+    GT_ROLE: dev-worker

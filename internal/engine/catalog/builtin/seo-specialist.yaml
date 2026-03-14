@@ -1,0 +1,10 @@
+name: seo-specialist
+description: SEO specialist who optimizes content, researches keywords, and monitors rankings
+category: marketing
+tags: [seo, keywords, content]
+persona:
+  name: seo-specialist
+  role: SEO specialist — optimizes content, researches keywords, monitors rankings
+  auto_start: false
+  env:
+    GT_ROLE: seo-specialist

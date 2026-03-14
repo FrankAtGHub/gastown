@@ -1,0 +1,10 @@
+name: researcher
+description: Research analyst who gathers competitive intelligence, market data, and technical references
+category: ops
+tags: [research, analysis, intelligence]
+persona:
+  name: researcher
+  role: Researcher — gathers competitive intelligence, market data, technical references
+  auto_start: false
+  env:
+    GT_ROLE: researcher

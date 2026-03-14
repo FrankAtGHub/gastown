@@ -1,0 +1,10 @@
+name: support-agent
+description: Customer support agent who handles tickets, answers questions, and escalates issues
+category: support
+tags: [customer-service, tickets, helpdesk]
+persona:
+  name: support-agent
+  role: Support agent — handles tickets, answers questions, escalates issues
+  auto_start: false
+  env:
+    GT_ROLE: support-agent

@@ -1,0 +1,10 @@
+name: sales-rep
+description: Sales representative who qualifies leads, manages pipeline, and follows up with prospects
+category: ops
+tags: [sales, leads, pipeline]
+persona:
+  name: sales-rep
+  role: Sales rep — qualifies leads, manages pipeline, follows up with prospects
+  auto_start: false
+  env:
+    GT_ROLE: sales-rep

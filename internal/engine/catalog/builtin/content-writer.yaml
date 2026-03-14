@@ -1,0 +1,10 @@
+name: content-writer
+description: Content writer who creates blog posts, documentation, and marketing materials
+category: marketing
+tags: [writing, content, docs]
+persona:
+  name: content-writer
+  role: Content writer — creates blog posts, documentation, marketing materials
+  auto_start: false
+  env:
+    GT_ROLE: content-writer

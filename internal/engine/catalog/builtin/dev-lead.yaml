@@ -1,0 +1,10 @@
+name: dev-lead
+description: Senior developer who plans architecture, reviews PRs, and coordinates dev work
+category: dev
+tags: [architecture, code-review, planning]
+persona:
+  name: dev-lead
+  role: Senior developer — plans architecture, reviews PRs, coordinates dev work
+  auto_start: true
+  env:
+    GT_ROLE: dev-lead
