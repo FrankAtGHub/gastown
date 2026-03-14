@@ -137,20 +137,20 @@ func (m *Manager) Launch(p *Persona) (*Session, error) {
 		workDir = cwd
 	}
 
-	// Create tmux session running the launch script
-	sess, err := m.tmux.NewSession(&gotmux.SessionOptions{
-		Name:           name,
-		ShellCommand:   "bash " + scriptPath,
-		StartDirectory: workDir,
-	})
-	if err != nil {
+	// Create tmux session using raw tmux command.
+	// gotmux's NewSession single-quotes the ShellCommand which breaks our script.
+	// Raw tmux new-session works reliably.
+	createCmd := exec.Command("tmux", "new-session", "-d",
+		"-s", name,
+		"-c", workDir,
+		"bash", scriptPath)
+	if err := createCmd.Run(); err != nil {
 		return nil, fmt.Errorf("creating tmux session for %s: %w", p.Name, err)
 	}
 
 	session := &Session{
 		Persona:  p,
 		TmuxName: name,
-		TmuxSess: sess,
 	}
 	m.sessions[p.Name] = session
 
@@ -224,23 +224,10 @@ func (m *Manager) writeLaunchScript(p *Persona) (string, error) {
 
 // Stop kills a running agent session.
 func (m *Manager) Stop(persona string) error {
-	sess, ok := m.sessions[persona]
-	if !ok {
-		// Try to find it by tmux session name even if not tracked
-		name := m.sessionName(persona)
-		sessions, err := m.tmux.ListSessions()
-		if err != nil {
-			return fmt.Errorf("no session for persona %q", persona)
-		}
-		for _, s := range sessions {
-			if s.Name == name {
-				return s.Kill()
-			}
-		}
-		return fmt.Errorf("no session for persona %q", persona)
-	}
-	if err := sess.TmuxSess.Kill(); err != nil {
-		return fmt.Errorf("killing session %s: %w", sess.TmuxName, err)
+	name := m.sessionName(persona)
+	killCmd := exec.Command("tmux", "kill-session", "-t", name)
+	if err := killCmd.Run(); err != nil {
+		return fmt.Errorf("no session %q to stop", name)
 	}
 	delete(m.sessions, persona)
 	return nil
@@ -258,34 +245,24 @@ func (m *Manager) List() []*Session {
 // IsRunning checks if a persona's session is still alive.
 func (m *Manager) IsRunning(persona string) bool {
 	name := m.sessionName(persona)
-	sessions, err := m.tmux.ListSessions()
-	if err != nil {
-		return false
-	}
-	for _, s := range sessions {
-		if s.Name == name {
-			return true
-		}
-	}
-	// Clean up stale tracking
-	delete(m.sessions, persona)
-	return false
+	checkCmd := exec.Command("tmux", "has-session", "-t", name)
+	return checkCmd.Run() == nil
 }
 
 // DiscoverSessions scans tmux for existing town sessions and populates the sessions map.
 func (m *Manager) DiscoverSessions() {
 	prefix := m.townName + "-"
-	sessions, err := m.tmux.ListSessions()
+	listCmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	out, err := listCmd.Output()
 	if err != nil {
 		return
 	}
-	for _, s := range sessions {
-		if strings.HasPrefix(s.Name, prefix) {
-			personaName := strings.TrimPrefix(s.Name, prefix)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			personaName := strings.TrimPrefix(line, prefix)
 			if _, ok := m.sessions[personaName]; !ok {
 				m.sessions[personaName] = &Session{
-					TmuxName: s.Name,
-					TmuxSess: s,
+					TmuxName: line,
 					Persona:  &Persona{Name: personaName},
 				}
 			}
