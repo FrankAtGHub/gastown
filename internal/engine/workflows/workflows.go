@@ -90,6 +90,11 @@ func (e *Engine) Functions() []inngestgo.ServableFunction {
 	return e.functions
 }
 
+// Client returns the underlying Inngest client for HTTP handler creation.
+func (e *Engine) Client() inngestgo.Client {
+	return e.client
+}
+
 // registerFunctions sets up all workflow functions.
 func (e *Engine) registerFunctions() error {
 	// Dead man's switch: check heartbeats every 2 minutes
