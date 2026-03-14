@@ -200,8 +200,10 @@ func (m *Manager) writeLaunchScript(p *Persona) (string, error) {
 		sb.WriteString(fmt.Sprintf(" --settings %q", agentSettingsPath))
 	}
 
+	// If a prompt is set, run in non-interactive (print) mode
+	// This keeps the agent running until the task is complete
 	if p.Prompt != "" {
-		sb.WriteString(fmt.Sprintf(" --prompt %q", p.Prompt))
+		sb.WriteString(fmt.Sprintf(" -p %q", p.Prompt))
 	}
 	sb.WriteString("\n")
 
