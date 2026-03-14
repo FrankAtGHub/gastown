@@ -14,6 +14,7 @@ import (
 	"github.com/FrankAtGHub/night-city/internal/engine/catalog"
 	"github.com/FrankAtGHub/night-city/internal/engine/launcher"
 	"github.com/FrankAtGHub/night-city/internal/style"
+	"github.com/FrankAtGHub/night-city/internal/web"
 	"gopkg.in/yaml.v3"
 )
 
@@ -452,6 +453,32 @@ func runTownCatalog(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// --- town dashboard ---
+
+var townDashboardAddr string
+
+var townDashboardCmd = &cobra.Command{
+	Use:   "dashboard",
+	Short: "Launch the web dashboard",
+	Long:  "Start the HTMX+SSE dashboard showing real-time agent status, heartbeats, and accountability.",
+	RunE:  runTownDashboard,
+}
+
+func runTownDashboard(cmd *cobra.Command, args []string) error {
+	townDir, err := findTownDir()
+	if err != nil {
+		return err
+	}
+
+	srv, err := web.NewServer(townDir, townDashboardAddr)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	return srv.Start(ctx)
+}
+
 // --- registration ---
 
 func init() {
@@ -462,6 +489,9 @@ func init() {
 	// town status flags
 	townStatusCmd.Flags().BoolVar(&townStatusJSON, "json", false, "Output as JSON")
 
+	// town dashboard flags
+	townDashboardCmd.Flags().StringVar(&townDashboardAddr, "addr", "localhost:8420", "Dashboard listen address")
+
 	// Add subcommands
 	townCmd.AddCommand(townInitCmd)
 	townCmd.AddCommand(townStartCmd)
@@ -469,6 +499,7 @@ func init() {
 	townCmd.AddCommand(townStatusCmd)
 	townCmd.AddCommand(townAddCmd)
 	townCmd.AddCommand(townCatalogCmd)
+	townCmd.AddCommand(townDashboardCmd)
 
 	// Register with root
 	rootCmd.AddCommand(townCmd)
