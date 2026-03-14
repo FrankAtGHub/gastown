@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/FrankAtGHub/night-city/internal/engine/accountability"
+	"github.com/FrankAtGHub/night-city/internal/engine"
 	"github.com/FrankAtGHub/night-city/internal/engine/launcher"
 )
 
@@ -81,7 +82,7 @@ func (b *Bot) NotifyAlert(agent, message string) error {
 }
 
 // NotifyStatus sends a status summary of all agents.
-func (b *Bot) NotifyStatus(personas []*launcher.Persona) error {
+func (b *Bot) NotifyStatus(personas []*engine.Persona) error {
 	var lines []string
 	lines = append(lines, "📊 *Town Status*")
 

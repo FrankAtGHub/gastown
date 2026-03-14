@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/FrankAtGHub/night-city/internal/engine/launcher"
+	"github.com/FrankAtGHub/night-city/internal/engine"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,7 +21,7 @@ type Template struct {
 	Description string   `yaml:"description"`
 	Category    string   `yaml:"category"`    // dev, marketing, ops, support
 	Tags        []string `yaml:"tags"`
-	Persona     launcher.Persona `yaml:"persona"`
+	Persona     engine.Persona `yaml:"persona"`
 }
 
 // Catalog manages available persona templates.

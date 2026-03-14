@@ -13,33 +13,16 @@ import (
 	"strings"
 
 	"github.com/GianlucaP106/gotmux/gotmux"
+	"github.com/FrankAtGHub/night-city/internal/engine"
+	"github.com/FrankAtGHub/night-city/internal/engine/provision"
 	"gopkg.in/yaml.v3"
 )
 
-// Persona defines an agent's configuration, loaded from a YAML file.
-type Persona struct {
-	Name       string            `yaml:"name"`        // e.g., "mayor", "architect"
-	Role       string            `yaml:"role"`        // human-readable role description
-	ClaudeMD   string            `yaml:"claude_md"`   // path to CLAUDE.md
-	MemoryDir  string            `yaml:"memory_dir"`  // path to memory directory
-	ProjectDir string            `yaml:"project_dir"` // working directory for this agent
-	Tools      []string          `yaml:"tools"`       // allowed tools
-	MCPServers []MCPServer       `yaml:"mcp_servers"` // MCP servers to connect
-	Env        map[string]string `yaml:"env"`         // environment variables
-	AutoStart  bool              `yaml:"auto_start"`  // start on `town start`
-	Model      string            `yaml:"model"`       // claude model override
-	Prompt     string            `yaml:"prompt"`      // initial prompt to send on startup
-	AllowPerms bool              `yaml:"allow_perms"` // skip permission prompts (dangerous)
-}
+// Persona is an alias for engine.Persona for convenience.
+type Persona = engine.Persona
 
-// MCPServer defines an MCP server connection for a persona.
-type MCPServer struct {
-	Name      string   `yaml:"name"`
-	Command   string   `yaml:"command"`   // for stdio transport
-	Args      []string `yaml:"args"`
-	URL       string   `yaml:"url"`       // for SSE transport
-	Transport string   `yaml:"transport"` // "stdio" or "sse"
-}
+// MCPServer is an alias for engine.MCPServer for convenience.
+type MCPServer = engine.MCPServer
 
 // LoadPersona reads a persona definition from a YAML file.
 func LoadPersona(path string) (*Persona, error) {
@@ -123,6 +106,20 @@ func (m *Manager) Launch(p *Persona) (*Session, error) {
 				return nil, fmt.Errorf("session %q already running", name)
 			}
 		}
+	}
+
+	// Provision agent directory (CLAUDE.md, hooks, memory)
+	agentDir, err := provision.Provision(m.townDir, m.townName, p)
+	if err != nil {
+		return nil, fmt.Errorf("provisioning %s: %w", p.Name, err)
+	}
+
+	// Update persona with provisioned paths
+	if p.ClaudeMD == "" {
+		p.ClaudeMD = agentDir.ClaudeMD
+	}
+	if p.MemoryDir == "" {
+		p.MemoryDir = agentDir.MemoryDir
 	}
 
 	// Write a launch script (avoids shell quoting issues with gotmux)
